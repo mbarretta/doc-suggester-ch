@@ -37,12 +37,14 @@ Provider selection is by available credentials: if `ANTHROPIC_API_KEY` is set it
 doc-suggester-ch --provider openai "prospect wants sub-second dashboards"
 ```
 
-Each provider uses two models — the main one drives the multi-turn recommendation loop, and the bulk one handles the high-volume single-shot work (blog synopses, Academy enrichment):
+Each provider uses two models. The **main** model drives the multi-turn recommendation loop, where judgement matters and there is one call per query. The **bulk** model handles the high-volume single-shot work — a synopsis for each of ~870 blog posts, plus enrichment for each of 29 Academy courses — where a cheaper model is plenty and the call count is what drives cost.
 
-| Provider | Main model | Bulk model |
-| --- | --- | --- |
-| `anthropic` | `claude-opus-5` | `claude-sonnet-5` |
-| `openai` | `gpt-5.6-terra` | `gpt-5.6-luna` |
+| Provider | Main model | Bulk model | Bulk $/MTok (in/out) |
+| --- | --- | --- | --- |
+| `anthropic` | `claude-opus-5` | `claude-sonnet-5` | $2 / $10 |
+| `openai` | `gpt-5.6-terra` | `gpt-5.6-luna` | $0.20 / $1.20 |
+
+The split is worth keeping straight: a full `init` sends roughly 0.8M input and 0.04M output tokens through the bulk model. On `gpt-5.6-luna` that is about **$0.21**; putting `gpt-5.6-terra` ($2 / $12) in the bulk slot instead would make the same run about **$2.07** for no benefit, since synopsis writing is not a reasoning-heavy task. Synopses and enrichment are both cached, so you pay it once and then only for new posts and changed courses.
 
 Model names churn faster than this code will, so both are overridable without a code change:
 
