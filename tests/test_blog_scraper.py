@@ -152,3 +152,37 @@ def test_save_checkpoint_sorts_keys(tmp_path: Path):
     save_checkpoint(tmp_path, {"z": {"date": ""}, "a": {"date": ""}})
     raw = (tmp_path / "output" / "checkpoint.json").read_text(encoding="utf-8")
     assert list(json.loads(raw)) == ["a", "z"]
+
+
+RULES_HTML = """<html><body><article>
+  <h1>Post with rules</h1>
+  <p>Before the rule.</p>
+  <hr>
+  <p>After the rule.</p>
+  <hr/>
+  <p>Final paragraph.</p>
+</article></body></html>"""
+
+
+def test_horizontal_rules_do_not_break_the_separator_contract():
+    """markdownify renders <hr> as `---`, which is also the archive separator."""
+    post = parse_post_html(RULES_HTML, "https://clickhouse.com/blog/rules")
+
+    assert "\n---\n" not in f"\n{post.markdown}\n"
+    assert "***" in post.markdown
+    assert "Final paragraph." in post.markdown
+
+
+def test_archive_round_trip_survives_horizontal_rules(tmp_path: Path):
+    from doc_suggester_ch.blog_manager import archive_path, parse_blog_index
+
+    post = parse_post_html(RULES_HTML, "https://clickhouse.com/blog/rules")
+    path = archive_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# H\n\n---\n\n" + format_post(post), encoding="utf-8")
+
+    parsed = parse_blog_index(path)
+    assert len(parsed) == 1
+    # Nothing lost: the last paragraph still made it through
+    assert parsed[0].full_content == post.markdown
+    assert "Final paragraph." in parsed[0].full_content

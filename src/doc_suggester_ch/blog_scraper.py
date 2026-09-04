@@ -51,6 +51,7 @@ _ARCHIVE_HEADER = (
 _DATE_PUBLISHED_RE = re.compile(r'"datePublished"\s*:\s*"([^"]+)"')
 _AUTHOR_RE = re.compile(r'"author"\s*:\s*\{[^}]*?"name"\s*:\s*"([^"]+)"')
 _EXCESS_BLANKS_RE = re.compile(r"\n{3,}")
+_BARE_RULE_RE = re.compile(r"(?m)^[ \t]*-{3,}[ \t]*$")
 
 # Trailing marketing blocks that survive <article> scoping on some posts.
 _BOILERPLATE_RES = [
@@ -117,6 +118,11 @@ def _clean(markdown: str) -> str:
     text = markdown
     for pattern in _BOILERPLATE_RES:
         text = pattern.sub("", text)
+    # `---` on its own line is the archive's post separator, and markdownify
+    # renders <hr> exactly that way — so a post containing a horizontal rule
+    # would be silently truncated when the archive is parsed back. Rewrite to
+    # the equivalent markdown rule to keep the separator unambiguous.
+    text = _BARE_RULE_RE.sub("***", text)
     text = _EXCESS_BLANKS_RE.sub("\n\n", text)
     return text.strip()
 
