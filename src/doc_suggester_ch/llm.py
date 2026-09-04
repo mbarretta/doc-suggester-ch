@@ -37,8 +37,8 @@ _ENV_KEYS = {ANTHROPIC: "ANTHROPIC_API_KEY", OPENAI: "OPENAI_API_KEY"}
 # (main model, bulk model). Main drives the tool loop; bulk does the
 # high-volume single-shot work where a cheaper model is plenty.
 _MODELS = {
-    ANTHROPIC: ("claude-opus-5", "claude-haiku-4-5"),
-    OPENAI: ("gpt-5.5", "gpt-5.4-mini"),
+    ANTHROPIC: ("claude-opus-5", "claude-sonnet-5"),
+    OPENAI: ("gpt-5.6-terra", "gpt-5.6-luna"),
 }
 
 _MAIN_MODEL_ENV = "DOC_SUGGESTER_CH_MODEL"

@@ -37,18 +37,18 @@ Provider selection is by available credentials: if `ANTHROPIC_API_KEY` is set it
 doc-suggester-ch --provider openai "prospect wants sub-second dashboards"
 ```
 
-Each provider uses two models — a capable one for the recommendation loop, and a cheaper one for the high-volume single-shot work (blog synopses, Academy enrichment):
+Each provider uses two models — the main one drives the multi-turn recommendation loop, and the bulk one handles the high-volume single-shot work (blog synopses, Academy enrichment):
 
 | Provider | Main model | Bulk model |
 | --- | --- | --- |
-| `anthropic` | `claude-opus-5` | `claude-haiku-4-5` |
-| `openai` | `gpt-5.5` | `gpt-5.4-mini` |
+| `anthropic` | `claude-opus-5` | `claude-sonnet-5` |
+| `openai` | `gpt-5.6-terra` | `gpt-5.6-luna` |
 
 Model names churn faster than this code will, so both are overridable without a code change:
 
 ```bash
 DOC_SUGGESTER_CH_MODEL=gpt-5.6-sol \
-DOC_SUGGESTER_CH_BULK_MODEL=gpt-5.4-nano \
+DOC_SUGGESTER_CH_BULK_MODEL=gpt-5.4-mini \
   doc-suggester-ch "prospect notes"
 ```
 
