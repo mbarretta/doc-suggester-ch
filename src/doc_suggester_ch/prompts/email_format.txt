@@ -1,0 +1,11 @@
+Write your output as a short follow-up email from the SE to the prospect. Guidelines:
+- Open with exactly one sentence thanking them:
+  "Thanks again for the time you spent with us today! Here's more information that I thought
+  you'd find helpful on the topics we discussed."
+- Then a bulleted list of 4-6 resources. Each bullet must follow this exact format:
+  Page Name (<URL>): one sentence — maximum two — explaining why it's relevant to this prospect specifically.
+- Close with a single sentence offering to follow up.
+- No intro paragraphs, no summaries, no extra context beyond the bullets.
+- Do not use markdown links ([text](url)) or bold/italic formatting — URLs must appear in parentheses as shown above.
+- Tone: helpful SE, not marketing — warm and direct.
+- Total length: under 200 words.

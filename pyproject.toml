@@ -1,0 +1,32 @@
+[project]
+name = "doc-suggester-ch"
+version = "0.1.0"
+description = "Recommend relevant ClickHouse blogs, docs, and Academy courses from SE prospect notes"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.0.0",
+    "mcp>=2.0.0",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "markdownify>=0.13",
+]
+
+[project.scripts]
+doc-suggester-ch = "doc_suggester_ch.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doc_suggester_ch"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
