@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from conftest import FakeProvider
 
 from doc_suggester_ch.academy_scraper import (
     Course,
@@ -136,10 +136,10 @@ async def test_enrich_courses_reuses_cache_on_matching_hash():
         "intent_signals": ["too expensive"],
     }}
 
-    with patch("doc_suggester_ch.academy_scraper.anthropic.AsyncAnthropic") as mock_cls:
-        await enrich_courses([course], cached)
+    provider = FakeProvider()
+    await enrich_courses([course], cached, provider=provider)
 
-    mock_cls.assert_not_called()
+    assert provider.complete_calls == []
     assert course.difficulty == "intermediate"
     assert course.summary == "cached summary"
     assert course.technologies == ["ClickStack"]
@@ -150,41 +150,66 @@ async def test_enrich_courses_calls_model_on_hash_change():
     course.content_hash = "new-hash"
     cached = {"1": {"content_hash": "old-hash", "difficulty": "beginner"}}
 
-    block = type("B", (), {"type": "text", "text": '''
+    provider = FakeProvider(completions=["""
     {"difficulty":"advanced","summary":"s","technologies":["Kafka"],
      "personas":["data engineer"],"problems_addressed":["p"],"intent_signals":["i"]}
-    '''})()
-    response = type("R", (), {"content": [block]})()
+    """])
+    await enrich_courses([course], cached, provider=provider)
 
-    mock_client = AsyncMock()
-    mock_client.messages.create = AsyncMock(return_value=response)
-
-    with patch("doc_suggester_ch.academy_scraper.anthropic.AsyncAnthropic", return_value=mock_client):
-        await enrich_courses([course], cached)
-
-    mock_client.messages.create.assert_awaited_once()
+    assert len(provider.complete_calls) == 1
     assert course.difficulty == "advanced"
     assert course.technologies == ["Kafka"]
     assert course.personas == ["data engineer"]
 
 
+async def test_enrich_courses_accepts_fenced_json():
+    course = Course(id="1", title="T", url="u", member_url="m", description="desc")
+    provider = FakeProvider(completions=[
+        'Here you go:\n```json\n{"difficulty":"beginner","summary":"s"}\n```'
+    ])
+    await enrich_courses([course], {}, provider=provider)
+
+    assert course.difficulty == "beginner"
+
+
+async def test_enrich_courses_prompt_carries_scraped_facts():
+    course = Course(
+        id="1", title="Observability L1", url="u", member_url="m",
+        description="about text", style="Self paced",
+        learning_paths=["Learning Path: Observability"], modules=["Module 1: Intro"],
+    )
+    provider = FakeProvider(completions=['{"difficulty":"beginner"}'])
+    await enrich_courses([course], {}, provider=provider)
+
+    prompt = provider.complete_calls[0][0]
+    assert "Observability L1" in prompt
+    assert "Learning Path: Observability" in prompt
+    assert "Self paced" in prompt
+    assert "Module 1: Intro" in prompt
+    assert "about text" in prompt
+
+
 async def test_enrich_courses_skips_courses_without_description():
     course = Course(id="1", title="T", url="u", member_url="m", description="")
-    with patch("doc_suggester_ch.academy_scraper.anthropic.AsyncAnthropic") as mock_cls:
-        await enrich_courses([course], {})
-    mock_cls.assert_not_called()
+    provider = FakeProvider()
+    await enrich_courses([course], {}, provider=provider)
+    assert provider.complete_calls == []
 
 
 async def test_enrich_courses_survives_bad_model_output():
     course = Course(id="1", title="T", url="u", member_url="m", description="desc")
-    block = type("B", (), {"type": "text", "text": "not json at all"})()
-    response = type("R", (), {"content": [block]})()
-    mock_client = AsyncMock()
-    mock_client.messages.create = AsyncMock(return_value=response)
-
-    with patch("doc_suggester_ch.academy_scraper.anthropic.AsyncAnthropic", return_value=mock_client):
-        await enrich_courses([course], {})
+    provider = FakeProvider(completions=["not json at all"])
+    await enrich_courses([course], {}, provider=provider)
 
     # Failure is logged, not raised; the scraped facts survive
+    assert course.difficulty == ""
+    assert course.description == "desc"
+
+
+async def test_enrich_courses_survives_provider_error():
+    course = Course(id="1", title="T", url="u", member_url="m", description="desc")
+    provider = FakeProvider(complete_error=RuntimeError("no credits"))
+    await enrich_courses([course], {}, provider=provider)
+
     assert course.difficulty == ""
     assert course.description == "desc"

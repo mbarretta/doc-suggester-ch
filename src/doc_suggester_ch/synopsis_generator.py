@@ -14,14 +14,12 @@ import logging
 import sys
 from pathlib import Path
 
-import anthropic
-
 from doc_suggester_ch.blog_manager import BlogPost
 from doc_suggester_ch.blog_scraper import url_to_slug
+from doc_suggester_ch.llm import LLMProvider, resolve_provider
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5"
 _CONCURRENCY = 10
 _SYNOPSES_NAME = "blog-synopses.json"
 
@@ -51,7 +49,11 @@ def load_synopses(project_root: Path) -> dict[str, str]:
     return data if isinstance(data, dict) else {}
 
 
-async def generate_synopses(project_root: Path, posts: list[BlogPost]) -> dict[str, str]:
+async def generate_synopses(
+    project_root: Path,
+    posts: list[BlogPost],
+    provider: LLMProvider | str | None = None,
+) -> dict[str, str]:
     """Generate and cache synopses for posts that lack one.
 
     Returns the full mapping of slug -> synopsis (cached plus newly generated).
@@ -68,7 +70,7 @@ async def generate_synopses(project_root: Path, posts: list[BlogPost]) -> dict[s
         file=sys.stderr,
         flush=True,
     )
-    client = anthropic.AsyncAnthropic()
+    llm = resolve_provider(provider) if provider is None or isinstance(provider, str) else provider
     semaphore = asyncio.Semaphore(_CONCURRENCY)
     failures: list[str] = []
 
@@ -77,13 +79,8 @@ async def generate_synopses(project_root: Path, posts: list[BlogPost]) -> dict[s
         prompt = _PROMPT.format(title=post.title, content=post.full_content[:3000])
         async with semaphore:
             try:
-                response = await client.messages.create(
-                    model=_MODEL,
-                    max_tokens=200,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = next((b.text for b in response.content if b.type == "text"), None)
-                return slug, text.strip() if text else None
+                text = await llm.complete(prompt, max_tokens=200)
+                return slug, text.strip() or None
             except Exception as exc:  # noqa: BLE001 — one post must not kill the run
                 logger.debug("failed to generate synopsis for %s: %s", slug, exc)
                 failures.append(f"{type(exc).__name__}: {exc}")

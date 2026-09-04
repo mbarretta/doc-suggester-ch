@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import FakeProvider
+
 from doc_suggester_ch.cli import _parse_args, _resolve_project_root, _run_init, main
+from doc_suggester_ch.llm import ProviderError
 
 
 def test_parse_args_defaults():
@@ -25,6 +28,19 @@ def test_parse_args_flags():
     assert args.refresh is True
     assert args.verbose is True
     assert args.notes == ["a", "b"]
+
+
+def test_parse_args_provider_defaults_to_none():
+    assert _parse_args(["notes"]).provider is None
+
+
+def test_parse_args_accepts_provider():
+    assert _parse_args(["--provider", "openai", "notes"]).provider == "openai"
+
+
+def test_parse_args_rejects_unknown_provider():
+    with pytest.raises(SystemExit):
+        _parse_args(["--provider", "cohere", "notes"])
 
 
 def test_parse_args_rejects_unknown_format():
@@ -53,6 +69,27 @@ def test_main_passes_format_and_refresh():
     kwargs = suggest.await_args.kwargs
     assert kwargs["output_format"] == "email"
     assert kwargs["force_refresh"] is True
+
+
+def test_main_passes_provider():
+    suggest = AsyncMock(return_value="out")
+    _run_main(["--provider", "openai", "notes"], suggest)
+    assert suggest.await_args.kwargs["provider"] == "openai"
+
+
+def test_main_provider_defaults_to_none():
+    suggest = AsyncMock(return_value="out")
+    _run_main(["notes"], suggest)
+    assert suggest.await_args.kwargs["provider"] is None
+
+
+def test_main_exits_2_on_provider_error(capsys):
+    suggest = AsyncMock(side_effect=ProviderError("No API key found. Set one of: ..."))
+    with pytest.raises(SystemExit) as exc:
+        _run_main(["notes"], suggest)
+
+    assert exc.value.code == 2
+    assert "No API key found" in capsys.readouterr().err
 
 
 def test_main_reads_notes_file(tmp_path: Path):
@@ -115,25 +152,40 @@ def test_main_init_accepts_project_root():
 
 async def test_run_init_refreshes_then_generates_synopses(tmp_path: Path):
     post = MagicMock()
+    provider = FakeProvider()
     with patch("doc_suggester_ch.blog_scraper.refresh_blogs", new=AsyncMock()) as blogs, \
          patch("doc_suggester_ch.academy_scraper.refresh_training", new=AsyncMock()) as training, \
          patch("doc_suggester_ch.blog_manager.parse_blog_index", return_value=[post]), \
+         patch("doc_suggester_ch.llm.resolve_provider", return_value=provider), \
          patch("doc_suggester_ch.synopsis_generator.generate_synopses", new=AsyncMock()) as syn:
         await _run_init(tmp_path)
 
     blogs.assert_awaited_once()
     training.assert_awaited_once()
     syn.assert_awaited_once()
+    # The resolved provider is reused, not re-resolved per call site
+    assert training.await_args.kwargs["provider"] is provider
+    assert syn.await_args.kwargs["provider"] is provider
 
 
 async def test_run_init_skips_synopses_when_no_posts(tmp_path: Path):
     with patch("doc_suggester_ch.blog_scraper.refresh_blogs", new=AsyncMock()), \
          patch("doc_suggester_ch.academy_scraper.refresh_training", new=AsyncMock()), \
          patch("doc_suggester_ch.blog_manager.parse_blog_index", return_value=[]), \
+         patch("doc_suggester_ch.llm.resolve_provider", return_value=FakeProvider()), \
          patch("doc_suggester_ch.synopsis_generator.generate_synopses", new=AsyncMock()) as syn:
         await _run_init(tmp_path)
 
     syn.assert_not_awaited()
+
+
+async def test_run_init_fails_fast_on_missing_credentials(tmp_path: Path):
+    with patch("doc_suggester_ch.blog_scraper.refresh_blogs", new=AsyncMock()) as blogs, \
+         patch("doc_suggester_ch.llm.resolve_provider", side_effect=ProviderError("no key")):
+        with pytest.raises(ProviderError):
+            await _run_init(tmp_path)
+
+    blogs.assert_not_awaited()
 
 
 def test_resolve_project_root_explicit_creates_dir(tmp_path: Path):

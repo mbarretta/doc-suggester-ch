@@ -30,12 +30,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
 import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 from doc_suggester_ch.fetcher import fetch_text, make_client
+from doc_suggester_ch.llm import LLMProvider, extract_json, resolve_provider
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,6 @@ MEMBER_CLASS_URL = f"{BASE_URL}/user_catalog_class/show"
 
 CATALOG_NAME = "training-catalog.json"
 
-_ENRICH_MODEL = "claude-haiku-4-5"
 _ENRICH_CONCURRENCY = 5
 
 _CATEGORY_LINK_RE = re.compile(
@@ -260,15 +259,11 @@ _ENRICHED_FIELDS = (
 )
 
 
-def _extract_json(text: str) -> dict:
-    """Pull the first JSON object out of a model response."""
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("no JSON object in response")
-    return json.loads(match.group(0))
-
-
-async def enrich_courses(courses: list[Course], cached: dict[str, dict]) -> None:
+async def enrich_courses(
+    courses: list[Course],
+    cached: dict[str, dict],
+    provider: LLMProvider | str | None = None,
+) -> None:
     """Fill LLM-derived fields in place, reusing cached values where valid.
 
     A cached entry is reused when its content_hash still matches, so re-running
@@ -288,8 +283,8 @@ async def enrich_courses(courses: list[Course], cached: dict[str, dict]) -> None
     if not todo:
         return
 
-    _status(f"Enriching {len(todo)} courses with Claude...")
-    client = anthropic.AsyncAnthropic()
+    llm = resolve_provider(provider) if provider is None or isinstance(provider, str) else provider
+    _status(f"Enriching {len(todo)} courses via {llm.name} ({llm.bulk_model})...")
     semaphore = asyncio.Semaphore(_ENRICH_CONCURRENCY)
     failures: list[str] = []
 
@@ -303,13 +298,8 @@ async def enrich_courses(courses: list[Course], cached: dict[str, dict]) -> None
         )
         async with semaphore:
             try:
-                response = await client.messages.create(
-                    model=_ENRICH_MODEL,
-                    max_tokens=1024,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = next((b.text for b in response.content if b.type == "text"), "")
-                data = _extract_json(text)
+                text = await llm.complete(prompt, max_tokens=1024)
+                data = extract_json(text)
             except Exception as exc:  # noqa: BLE001 — never lose a completed crawl
                 logger.debug("enrichment failed for course %s: %s", course.id, exc)
                 failures.append(f"{type(exc).__name__}: {exc}")
@@ -347,7 +337,11 @@ def _load_cached_courses(project_root: Path) -> dict[str, dict]:
     return {str(c.get("id")): c for c in data.get("courses", []) if c.get("id")}
 
 
-async def refresh_training(project_root: Path, force: bool = False) -> int:
+async def refresh_training(
+    project_root: Path,
+    force: bool = False,
+    provider: LLMProvider | str | None = None,
+) -> int:
     """Scrape the Academy catalog and write training-catalog.json.
 
     Returns the number of courses written. With `force`, discards cached
@@ -364,7 +358,7 @@ async def refresh_training(project_root: Path, force: bool = False) -> int:
         return 0
 
     cached = {} if force else _load_cached_courses(project_root)
-    await enrich_courses(courses, cached)
+    await enrich_courses(courses, cached, provider=provider)
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import FakeProvider
+
 from doc_suggester_ch.blog_manager import BlogPost
+from doc_suggester_ch.llm import MAX_TURNS, ProviderError
 from doc_suggester_ch.suggester import (
     _build_blog_index_text,
     _build_system_prompt,
@@ -151,10 +154,16 @@ async def test_dispatch_unknown_tool(docs):
     assert "Unknown tool" in await _dispatch_tool("nope", {}, {}, docs, {})
 
 
-def _patch_pipeline(response_sequence, post, course, docs_client):
-    """Patch suggest()'s data sources and return the mocked anthropic client."""
-    mock_client = AsyncMock()
-    mock_client.messages.create = AsyncMock(side_effect=response_sequence)
+@pytest.fixture
+def docs_ctx(docs):
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=docs)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
+def _patch_pipeline(post, course, docs_ctx):
+    """Patch suggest()'s data sources so only the provider drives behaviour."""
     return patch.multiple(
         "doc_suggester_ch.suggester",
         is_archive_stale=MagicMock(return_value=False),
@@ -164,95 +173,71 @@ def _patch_pipeline(response_sequence, post, course, docs_client):
         parse_blog_index=MagicMock(return_value=[post]),
         generate_synopses=AsyncMock(return_value={}),
         load_training=MagicMock(return_value=[course]),
-        DocsClient=MagicMock(return_value=docs_client),
-        anthropic=MagicMock(AsyncAnthropic=MagicMock(return_value=mock_client)),
-    ), mock_client
-
-
-@pytest.fixture
-def docs_ctx(docs):
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=docs)
-    ctx.__aexit__ = AsyncMock(return_value=None)
-    return ctx
+        DocsClient=MagicMock(return_value=docs_ctx),
+    )
 
 
 async def test_suggest_returns_final_text(tmp_path: Path, post, course, docs_ctx):
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="## Recommendations")])
-    patches, client = _patch_pipeline([final], post, course, docs_ctx)
-    with patches:
-        result = await suggest("prospect wants observability", tmp_path)
+    provider = FakeProvider(tool_script=["## Recommendations"])
+    with _patch_pipeline(post, course, docs_ctx):
+        result = await suggest("prospect wants observability", tmp_path, provider=provider)
 
     assert result == "## Recommendations"
-    assert client.messages.create.await_count == 1
+    assert len(provider.tool_loop_calls) == 1
 
 
-async def test_suggest_uses_opus_and_adaptive_thinking(tmp_path: Path, post, course, docs_ctx):
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="out")])
-    patches, client = _patch_pipeline([final], post, course, docs_ctx)
-    with patches:
-        await suggest("notes", tmp_path)
+async def test_suggest_passes_tools_and_system_prompt(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider()
+    with _patch_pipeline(post, course, docs_ctx):
+        await suggest("notes", tmp_path, provider=provider)
 
-    kwargs = client.messages.create.await_args.kwargs
-    assert kwargs["model"] == "claude-opus-5"
-    assert kwargs["thinking"] == {"type": "adaptive"}
-    assert [t["name"] for t in kwargs["tools"]] == [
+    call = provider.tool_loop_calls[0]
+    assert [t.name for t in call["tools"]] == [
         "get_blog_post", "search_docs", "get_doc_page", "get_training_course",
     ]
+    assert "ClickHouse sales engineers" in call["system"]
+    assert call["max_turns"] == MAX_TURNS
 
 
 async def test_suggest_includes_both_indexes_in_prompt(tmp_path: Path, post, course, docs_ctx):
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="out")])
-    patches, client = _patch_pipeline([final], post, course, docs_ctx)
-    with patches:
-        await suggest("prospect notes here", tmp_path)
+    provider = FakeProvider()
+    with _patch_pipeline(post, course, docs_ctx):
+        await suggest("prospect notes here", tmp_path, provider=provider)
 
-    content = client.messages.create.await_args.kwargs["messages"][0]["content"]
+    content = provider.tool_loop_calls[0]["user_content"]
     assert "prospect notes here" in content
     assert "## Blog Index" in content
     assert "## ClickHouse Academy Index" in content
 
 
-async def test_suggest_runs_tool_loop(tmp_path: Path, post, course, docs_ctx):
-    tool_turn = MagicMock(
-        stop_reason="tool_use",
-        content=[_block("tool_use", id="t1", name="search_docs", input={"query": "q"})],
-    )
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="done")])
-    patches, client = _patch_pipeline([tool_turn, final], post, course, docs_ctx)
-    with patches:
-        result = await suggest("notes", tmp_path)
+async def test_suggest_wires_dispatch_to_real_tools(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider(tool_script=[
+        [("search_docs", {"query": "primary key"}),
+         ("get_blog_post", {"url": post.url})],
+        "done",
+    ])
+    with _patch_pipeline(post, course, docs_ctx):
+        result = await suggest("notes", tmp_path, provider=provider)
 
     assert result == "done"
-    assert client.messages.create.await_count == 2
-    # The second call must carry the assistant turn plus a single user message of results
-    messages = client.messages.create.await_args.kwargs["messages"]
-    assert messages[1]["role"] == "assistant"
-    assert messages[2]["role"] == "user"
-    assert messages[2]["content"][0]["tool_use_id"] == "t1"
+    results = provider.tool_loop_calls[0]["results"]
+    assert results[0] == "search results"
+    assert results[1] == "full body of the post"
 
 
-async def test_suggest_reports_tool_failure_to_model(tmp_path: Path, post, course, docs_ctx):
-    docs_ctx.__aenter__.return_value.search = AsyncMock(side_effect=RuntimeError("boom"))
-    tool_turn = MagicMock(
-        stop_reason="tool_use",
-        content=[_block("tool_use", id="t1", name="search_docs", input={"query": "q"})],
-    )
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="recovered")])
-    patches, client = _patch_pipeline([tool_turn, final], post, course, docs_ctx)
-    with patches:
-        result = await suggest("notes", tmp_path)
+async def test_suggest_dispatch_reports_unknown_ids(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider(tool_script=[
+        [("get_training_course", {"course_id": "nope"})],
+        "done",
+    ])
+    with _patch_pipeline(post, course, docs_ctx):
+        await suggest("notes", tmp_path, provider=provider)
 
-    assert result == "recovered"
-    tool_result = client.messages.create.await_args.kwargs["messages"][2]["content"][0]
-    assert tool_result["is_error"] is True
-    assert "boom" in tool_result["content"]
+    assert "Course not found: nope" in provider.tool_loop_calls[0]["results"][0]
 
 
 async def test_suggest_refreshes_when_stale(tmp_path: Path, post, course, docs_ctx):
-    final = MagicMock(stop_reason="end_turn", content=[_block("text", text="out")])
-    mock_client = AsyncMock()
-    mock_client.messages.create = AsyncMock(return_value=final)
+    provider = FakeProvider()
     refresh_blogs = AsyncMock()
     refresh_training = AsyncMock()
 
@@ -266,32 +251,60 @@ async def test_suggest_refreshes_when_stale(tmp_path: Path, post, course, docs_c
         generate_synopses=AsyncMock(return_value={}),
         load_training=MagicMock(return_value=[course]),
         DocsClient=MagicMock(return_value=docs_ctx),
-        anthropic=MagicMock(AsyncAnthropic=MagicMock(return_value=mock_client)),
     ):
-        await suggest("notes", tmp_path)
+        await suggest("notes", tmp_path, provider=provider)
 
     refresh_blogs.assert_awaited_once()
     refresh_training.assert_awaited_once()
+    # The resolved provider is handed to enrichment so it doesn't re-resolve
+    assert refresh_training.await_args.kwargs["provider"] is provider
 
 
-async def test_suggest_handles_refusal(tmp_path: Path, post, course, docs_ctx):
-    refusal = MagicMock(
-        stop_reason="refusal",
-        content=[],
-        stop_details=MagicMock(explanation="policy decline"),
-    )
-    patches, _ = _patch_pipeline([refusal], post, course, docs_ctx)
-    with patches:
-        result = await suggest("notes", tmp_path)
+async def test_suggest_resolves_provider_by_name(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider(tool_script=["out"])
+    with _patch_pipeline(post, course, docs_ctx), \
+         patch("doc_suggester_ch.suggester.resolve_provider", return_value=provider) as resolve:
+        result = await suggest("notes", tmp_path, provider="openai")
 
-    assert "declined" in result
-    assert "policy decline" in result
+    resolve.assert_called_once_with("openai")
+    assert result == "out"
 
 
-async def test_suggest_handles_no_text_block(tmp_path: Path, post, course, docs_ctx):
-    empty = MagicMock(stop_reason="end_turn", content=[_block("thinking", thinking="hmm")])
-    patches, _ = _patch_pipeline([empty], post, course, docs_ctx)
-    with patches:
-        result = await suggest("notes", tmp_path)
+async def test_suggest_resolves_provider_when_omitted(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider(tool_script=["out"])
+    with _patch_pipeline(post, course, docs_ctx), \
+         patch("doc_suggester_ch.suggester.resolve_provider", return_value=provider) as resolve:
+        await suggest("notes", tmp_path)
+
+    resolve.assert_called_once_with(None)
+
+
+async def test_suggest_resolves_before_scraping(tmp_path: Path, post, course, docs_ctx):
+    """A bad credential must fail fast, not after a multi-minute crawl."""
+    refresh_blogs = AsyncMock()
+    with patch.multiple(
+        "doc_suggester_ch.suggester",
+        is_archive_stale=MagicMock(return_value=True),
+        is_training_stale=MagicMock(return_value=True),
+        refresh_blogs=refresh_blogs,
+        refresh_training=AsyncMock(),
+        parse_blog_index=MagicMock(return_value=[post]),
+        generate_synopses=AsyncMock(return_value={}),
+        load_training=MagicMock(return_value=[course]),
+        DocsClient=MagicMock(return_value=docs_ctx),
+    ), patch(
+        "doc_suggester_ch.suggester.resolve_provider",
+        side_effect=ProviderError("no key"),
+    ):
+        with pytest.raises(ProviderError):
+            await suggest("notes", tmp_path)
+
+    refresh_blogs.assert_not_awaited()
+
+
+async def test_suggest_handles_empty_model_output(tmp_path: Path, post, course, docs_ctx):
+    provider = FakeProvider(tool_script=["   "])
+    with _patch_pipeline(post, course, docs_ctx):
+        result = await suggest("notes", tmp_path, provider=provider)
 
     assert result == "No recommendations generated."

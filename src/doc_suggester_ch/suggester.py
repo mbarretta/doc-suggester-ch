@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from typing import Any
-
-import anthropic
 
 from doc_suggester_ch.academy_scraper import refresh_training
 from doc_suggester_ch.blog_manager import (
@@ -18,6 +15,12 @@ from doc_suggester_ch.blog_manager import (
 )
 from doc_suggester_ch.blog_scraper import refresh_blogs, url_to_slug
 from doc_suggester_ch.docs_client import DocsClient
+from doc_suggester_ch.llm import (
+    MAX_TURNS,
+    LLMProvider,
+    ToolSpec,
+    resolve_provider,
+)
 from doc_suggester_ch.synopsis_generator import generate_synopses
 from doc_suggester_ch.training_manager import (
     TrainingCourse,
@@ -26,10 +29,6 @@ from doc_suggester_ch.training_manager import (
     is_training_stale,
     load_training,
 )
-
-_MODEL = "claude-opus-5"
-_MAX_TURNS = 20
-_MAX_TOKENS = 16000
 
 _SYSTEM_PROMPT_BASE = """\
 You are a technical content advisor for ClickHouse sales engineers. Given notes about a \
@@ -87,40 +86,40 @@ def _build_system_prompt(output_format: str) -> str:
     return _SYSTEM_PROMPT_BASE + fmt
 
 
-_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "get_blog_post",
-        "description": "Fetch the full content of a ClickHouse blog post by its URL.",
-        "input_schema": {
+_TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="get_blog_post",
+        description="Fetch the full content of a ClickHouse blog post by its URL.",
+        schema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The blog post URL, as shown in the index."}
             },
             "required": ["url"],
         },
-    },
-    {
-        "name": "search_docs",
-        "description": (
+    ),
+    ToolSpec(
+        name="search_docs",
+        description=(
             "Search the ClickHouse documentation. Returns titles, links, and excerpts. "
             "Use this first to locate a page, then get_doc_page to read it."
         ),
-        "input_schema": {
+        schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What to search for."}
             },
             "required": ["query"],
         },
-    },
-    {
-        "name": "get_doc_page",
-        "description": (
+    ),
+    ToolSpec(
+        name="get_doc_page",
+        description=(
             "Read a ClickHouse documentation page in full. Pass the docs path from a "
             "search result (e.g. '/concepts/best-practices/choosing-a-primary-key') "
             "or a full clickhouse.com/docs URL."
         ),
-        "input_schema": {
+        schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Docs path or full URL."},
@@ -132,21 +131,21 @@ _TOOLS: list[dict[str, Any]] = [
             },
             "required": ["path"],
         },
-    },
-    {
-        "name": "get_training_course",
-        "description": (
+    ),
+    ToolSpec(
+        name="get_training_course",
+        description=(
             "Get full details for a ClickHouse Academy course by its ID, as shown in "
             "the Academy index. Use before recommending a course."
         ),
-        "input_schema": {
+        schema={
             "type": "object",
             "properties": {
                 "course_id": {"type": "string", "description": "Course ID, e.g. '1896608'."}
             },
             "required": ["course_id"],
         },
-    },
+    ),
 ]
 
 
@@ -208,6 +207,7 @@ async def suggest(
     project_root: Path,
     force_refresh: bool = False,
     output_format: str = "md",
+    provider: LLMProvider | str | None = None,
 ) -> str:
     """Generate content recommendations for SE notes.
 
@@ -216,20 +216,26 @@ async def suggest(
         project_root: Directory holding the `output/` data files.
         force_refresh: Re-scrape the blog archive and Academy catalog regardless of age.
         output_format: "md" for a ranked markdown list, "email" for a follow-up email.
+        provider: An LLMProvider, a provider name ("anthropic"/"openai"), or None
+            to pick one from the available API keys.
 
     Returns:
         Formatted recommendations in the requested format.
     """
+    # Resolve before any scraping, so a missing key fails in the first second
+    # rather than after a multi-minute crawl.
+    llm = resolve_provider(provider) if provider is None or isinstance(provider, str) else provider
+
     if force_refresh or is_archive_stale(project_root):
         _status("Refreshing blog archive...")
         await refresh_blogs(project_root, force=force_refresh)
 
     if force_refresh or is_training_stale(project_root):
         _status("Refreshing ClickHouse Academy catalog...")
-        await refresh_training(project_root, force=force_refresh)
+        await refresh_training(project_root, force=force_refresh, provider=llm)
 
     posts = parse_blog_index(archive_path(project_root))
-    synopses = await generate_synopses(project_root, posts)
+    synopses = await generate_synopses(project_root, posts, provider=llm)
     blog_index_text = _build_blog_index_text(posts, synopses)
     post_by_url = {post.url: post for post in posts}
 
@@ -237,70 +243,26 @@ async def suggest(
     course_by_id = {course.id: course for course in courses}
     training_index_text = build_training_index_text(courses)
 
-    client = anthropic.AsyncAnthropic()
-    system_prompt = _build_system_prompt(output_format)
-
     user_content = f"SE notes about prospect:\n\n{se_notes}\n\n{blog_index_text}"
     if training_index_text:
         user_content += f"\n\n{training_index_text}"
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    _status(f"Asking {llm.name} ({llm.main_model}) for recommendations...")
 
     async with DocsClient() as docs:
-        response = None
-        for _ in range(_MAX_TURNS):
-            _status("Thinking...")
-            response = await client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                thinking={"type": "adaptive"},
-                system=system_prompt,
-                tools=_TOOLS,
-                messages=messages,
-            )
+        async def dispatch(name: str, tool_input: dict[str, Any]) -> str:
+            return await _dispatch_tool(name, tool_input, post_by_url, docs, course_by_id)
 
-            # Append the full content list — thinking blocks must be echoed back
-            # unchanged for the model to continue reasoning across tool turns.
-            messages.append({"role": "assistant", "content": response.content})
+        def on_tool(name: str, tool_input: dict[str, Any]) -> None:
+            _status(_format_tool_status(name, tool_input))
 
-            if response.stop_reason == "refusal":
-                detail = getattr(response.stop_details, "explanation", "") or ""
-                return f"The request was declined by the model. {detail}".strip()
+        result = await llm.run_tool_loop(
+            system=_build_system_prompt(output_format),
+            user_content=user_content,
+            tools=_TOOLS,
+            dispatch=dispatch,
+            on_tool=on_tool,
+            max_turns=MAX_TURNS,
+        )
 
-            if response.stop_reason != "tool_use":
-                break
-
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-            for block in tool_use_blocks:
-                _status(_format_tool_status(block.name, block.input))
-
-            async def dispatch_block(block: Any) -> dict[str, Any]:
-                try:
-                    content = await _dispatch_tool(
-                        block.name, block.input, post_by_url, docs, course_by_id
-                    )
-                    return {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": content,
-                    }
-                except Exception as exc:  # noqa: BLE001 — report to the model, don't abort
-                    return {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": f"Tool failed: {exc}",
-                        "is_error": True,
-                    }
-
-            # All results for one assistant turn go back in a single user message.
-            tool_results = list(await asyncio.gather(*map(dispatch_block, tool_use_blocks)))
-            messages.append({"role": "user", "content": tool_results})
-
-    if response is None:
-        return "No recommendations generated."
-
-    for block in response.content:
-        if block.type == "text" and block.text.strip():
-            return block.text
-
-    return "No recommendations generated."
+    return result.strip() or "No recommendations generated."

@@ -24,6 +24,15 @@ def _setup_logging(verbose: bool) -> None:
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--provider",
+        choices=["anthropic", "openai"],
+        default=None,
+        help=(
+            "Which LLM provider to use. Default: whichever key is set, "
+            "preferring ANTHROPIC_API_KEY over OPENAI_API_KEY."
+        ),
+    )
+    parser.add_argument(
         "--project-root",
         metavar="DIR",
         default=None,
@@ -67,23 +76,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def _run_init(project_root: Path) -> None:
+async def _run_init(project_root: Path, provider: str | None = None) -> None:
     """Pre-fetch and process all data sources for first-run readiness."""
     from doc_suggester_ch.academy_scraper import refresh_training
     from doc_suggester_ch.blog_manager import archive_path, parse_blog_index
     from doc_suggester_ch.blog_scraper import refresh_blogs
+    from doc_suggester_ch.llm import resolve_provider
     from doc_suggester_ch.synopsis_generator import generate_synopses
+
+    # Resolve up front so a credential problem surfaces before the crawl.
+    llm = resolve_provider(provider)
+    _status(f"Using {llm.name} ({llm.main_model} / {llm.bulk_model}).")
 
     _status("Refreshing blog archive and ClickHouse Academy catalog...")
     await asyncio.gather(
         refresh_blogs(project_root, force=True),
-        refresh_training(project_root, force=True),
+        refresh_training(project_root, force=True, provider=llm),
     )
 
     posts = parse_blog_index(archive_path(project_root))
     if posts:
         _status(f"Generating blog synopses for {len(posts)} posts (this may take a few minutes)...")
-        await generate_synopses(project_root, posts)
+        await generate_synopses(project_root, posts, provider=llm)
     else:
         _status("Warning: no blog posts found after refresh — skipping synopsis generation.")
 
@@ -117,7 +131,10 @@ def main(argv: list[str] | None = None) -> None:
         _add_common_args(init_parser)
         init_args = init_parser.parse_args(raw[1:])
         _setup_logging(init_args.verbose)
-        asyncio.run(_run_init(_resolve_project_root(init_args.project_root)))
+        asyncio.run(_run_init(
+            _resolve_project_root(init_args.project_root),
+            provider=init_args.provider,
+        ))
         return
 
     args = _parse_args(argv)
@@ -140,14 +157,20 @@ def main(argv: list[str] | None = None) -> None:
         print("Error: SE notes are empty.", file=sys.stderr)
         sys.exit(1)
 
+    from doc_suggester_ch.llm import ProviderError
     from doc_suggester_ch.suggester import suggest
 
-    result = asyncio.run(suggest(
-        se_notes=notes,
-        project_root=_resolve_project_root(args.project_root),
-        force_refresh=args.refresh,
-        output_format=args.format,
-    ))
+    try:
+        result = asyncio.run(suggest(
+            se_notes=notes,
+            project_root=_resolve_project_root(args.project_root),
+            force_refresh=args.refresh,
+            output_format=args.format,
+            provider=args.provider,
+        ))
+    except ProviderError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
     print(result)
 
 
