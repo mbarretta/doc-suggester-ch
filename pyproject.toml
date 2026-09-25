@@ -2,6 +2,8 @@
 name = "doc-suggester-ch"
 version = "0.1.0"
 description = "Recommend relevant ClickHouse blogs, docs, and Academy courses from SE prospect notes"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.0.0",
