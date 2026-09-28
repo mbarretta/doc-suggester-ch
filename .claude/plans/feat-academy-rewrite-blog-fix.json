@@ -153,8 +153,8 @@
         "rejected": 1,
         "recorded_at": "2026-09-28T12:11:54-04:00"
       },
-      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-1",
-      "branch": "harness/feat-academy-rewrite-blog-fix/task-1",
+      "worktree": "",
+      "branch": "",
       "why": "The old Thought-Industries scraper is fully dead (0 courses); Skilljar exposes richer structured data (skilljarCourse JS object, ordered lesson lists, public transcripts) that should replace it wholesale per the hand-authored spec.",
       "acceptance_criteria": [
         {
@@ -267,8 +267,8 @@
         "rejected": 0,
         "recorded_at": "2026-09-28T12:17:54-04:00"
       },
-      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-2",
-      "branch": "harness/feat-academy-rewrite-blog-fix/task-2",
+      "worktree": "",
+      "branch": "",
       "why": "The checkpoint is presence-based ('have I ever scraped this slug'), so an edited existing post's new content is never re-fetched; nothing downstream reads refresh_blogs's return value, so its semantics are free to change.",
       "acceptance_criteria": [
         {
@@ -353,8 +353,8 @@
         "rejected": 0,
         "recorded_at": "2026-09-28T12:07:37-04:00"
       },
-      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-3",
-      "branch": "harness/feat-academy-rewrite-blog-fix/task-3",
+      "worktree": "",
+      "branch": "",
       "why": "Without content-hash invalidation here, a post that task 2 makes blog_scraper.py correctly re-scrape would still keep serving its stale synopsis forever, silently undoing that fix.",
       "acceptance_criteria": [
         {
@@ -516,6 +516,14 @@
     "pause_reason": "",
     "resumes": [],
     "completed_at": null,
-    "auto_decisions": []
+    "auto_decisions": [
+      {
+        "id": "ad1",
+        "timestamp": "2026-09-28T12:18:29-04:00",
+        "phase": "7.4",
+        "decision": "merged wave 1: tasks 1,2,3 -> main; pushed",
+        "reason": "managed run contract: merge-and-push pre-authorized at the go gate"
+      }
+    ]
   }
 }
