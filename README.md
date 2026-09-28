@@ -6,7 +6,7 @@ The ClickHouse counterpart to [doc-suggester-cgr](https://github.com/mbarretta/d
 
 ## How it works
 
-1. Checks if the blog archive is fresh (< 7 days old); scrapes clickhouse.com/blog if not
+1. Checks if the blog archive is fresh (< 7 days old); scrapes clickhouse.com/blog if not — re-scraping only posts whose sitemap `lastmod` has advanced and pruning posts no longer in the sitemap
 2. Parses the archive into a lightweight index of ~870 posts (with LLM-generated synopses for faster, more precise filtering)
 3. Loads the ClickHouse Academy catalog — self-paced courses and workshops with module outlines, difficulty, and intent signals
 4. Connects to the official ClickHouse docs MCP server over HTTP
@@ -16,11 +16,11 @@ The ClickHouse counterpart to [doc-suggester-cgr](https://github.com/mbarretta/d
 
 | Source | How it's collected |
 | --- | --- |
-| **Blog** — [clickhouse.com/blog](https://clickhouse.com/blog) | Posts are enumerated from `clickhouse.com/sitemap.xml` rather than the paginated listing: one request yields every post plus a `lastmod`. Each page is scraped to markdown; publish dates and authors come from the page's JSON-LD. Localized (`/ja/`, `/ko/`) translations are skipped. |
+| **Blog** — [clickhouse.com/blog](https://clickhouse.com/blog) | Posts are enumerated from `clickhouse.com/sitemap.xml` rather than the paginated listing: one request yields every post plus a `lastmod`. Each page is scraped to markdown; publish dates and authors come from the page's JSON-LD. Localized (`/ja/`, `/ko/`) translations are skipped. A checkpoint tracks each post's `lastmod`, so an edited post is re-scraped once the sitemap's `lastmod` for it advances, and a post that disappears from the sitemap is pruned from both the checkpoint and the archive. |
 | **Docs** — [clickhouse.com/docs](https://clickhouse.com/docs) | The official ClickHouse documentation MCP server at `https://clickhouse.com/docs/mcp`, over HTTP — nothing to install, no Docker. Provides full-text search plus a read-only filesystem over the docs tree. |
-| **Training** — [ClickHouse Academy](https://learn.clickhouse.com) | `/main_catalog` requires a login, but the public `visitor_` views of the same pages do not, so the scraper walks those: catalog root → learning path → course. Course IDs are shared between the two views, so each course records both its public URL and the signed-in `/user_catalog_class/show/{id}` URL. |
+| **Training** — [ClickHouse Academy](https://learn.clickhouse.com) | ClickHouse Academy runs on Skilljar. Courses are discovered from `learn.clickhouse.com/sitemap.xml`, then scraped from each course-root page's embedded `skilljarCourse` data (title, description, tags) and its ordered lesson list. Each lesson's public transcript is fetched too, but only as input to the one-time LLM enrichment call below — it's never persisted into the course description or the catalog file. |
 
-Because the Academy pages don't publish difficulty, personas, or intent signals, one cheap-model call per course derives them from the scraped description. Results are cached and keyed by a hash of the description, so re-running only pays for courses that actually changed.
+Because the Academy pages don't publish difficulty, personas, or intent signals, one cheap-model call per course derives them from the scraped description and lesson transcripts. Results are cached and keyed by a content hash, so re-running only pays for courses that actually changed.
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ Provider selection is by available credentials: if `ANTHROPIC_API_KEY` is set it
 doc-suggester-ch --provider openai "prospect wants sub-second dashboards"
 ```
 
-Each provider uses two models. The **main** model drives the multi-turn recommendation loop, where judgement matters and there is one call per query. The **bulk** model handles the high-volume single-shot work — a synopsis for each of ~870 blog posts, plus enrichment for each of 29 Academy courses — where a cheaper model is plenty and the call count is what drives cost.
+Each provider uses two models. The **main** model drives the multi-turn recommendation loop, where judgement matters and there is one call per query. The **bulk** model handles the high-volume single-shot work — a synopsis for each of ~870 blog posts, plus enrichment for each of ~19 Academy courses — where a cheaper model is plenty and the call count is what drives cost.
 
 | Provider | Main model | Bulk model | Bulk $/MTok (in/out) |
 | --- | --- | --- | --- |
@@ -155,8 +155,8 @@ All under `<project-root>/output/`, and all safely deletable — everything is r
 | File | Contents |
 | --- | --- |
 | `clickhouse-blog-archive.md` | One `## Title` section per post, with a `*Source: <url> \| <date> \| <authors>*` line |
-| `checkpoint.json` | `{slug: {title, url, date, scraped_at}}` — drives incremental scraping |
-| `blog-synopses.json` | `{slug: synopsis}` — LLM-generated, generated once per post |
+| `checkpoint.json` | `{slug: {title, url, date, scraped_at, lastmod}}` — drives incremental, edit-aware scraping; entries for posts removed from the sitemap are pruned |
+| `blog-synopses.json` | `{slug: {synopsis, content_hash}}` — LLM-generated, regenerated only when a post's content changes |
 | `training-catalog.json` | Academy courses: scraped facts plus LLM-derived metadata |
 
 ## Development
@@ -179,7 +179,7 @@ uv run python -m doc_suggester_ch "some SE notes"
 | `fetcher.py` | Shared async HTTP: User-Agent, retries with backoff, sitemap parsing |
 | `blog_scraper.py` | Sitemap discovery, post scraping, archive and checkpoint writing |
 | `blog_manager.py` | Archive staleness checks and parsing back into `BlogPost`s |
-| `academy_scraper.py` | Three-level Academy crawl and LLM enrichment |
+| `academy_scraper.py` | Skilljar sitemap discovery, course-page and lesson-transcript scraping, and LLM enrichment |
 | `training_manager.py` | Catalog staleness, loading, and prompt formatting |
 | `docs_client.py` | MCP client for the hosted ClickHouse docs server |
 | `synopsis_generator.py` | Cached LLM synopses for the blog index |
