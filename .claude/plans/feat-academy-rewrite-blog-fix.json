@@ -497,7 +497,7 @@
     {
       "id": "def-d1",
       "title": "Extract shared _content_hash helper (dedupe academy_scraper.py / synopsis_generator.py)",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [],
       "files": [
         "src/doc_suggester_ch/academy_scraper.py",
@@ -506,8 +506,8 @@
       ],
       "origin": "remediation",
       "self_review": null,
-      "worktree": "",
-      "branch": "",
+      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-def-d1",
+      "branch": "harness/feat-academy-rewrite-blog-fix/task-def-d1",
       "why": "Deferred item d1 (quality-finding, from task 4's cycle-level quality review): tasks 1 and 3 independently introduced a byte-for-byte identical _content_hash helper (sha256(text)[:16]); consolidating avoids silent divergence if either copy's formula ever changes without the other being updated.",
       "acceptance_criteria": [
         {
@@ -608,6 +608,10 @@
     {
       "timestamp": "2026-09-28T13:09:40-04:00",
       "note": "Deferred review (explicit /harness deferred): 1 converted (d1 -> def-d1), 0 carried, 0 dropped. Added def-d1 remediation task; recomputed parallel_plan (wave 3)."
+    },
+    {
+      "timestamp": "2026-09-28T13:09:57-04:00",
+      "note": "Dispatched task def-d1 to harness-task-runner in worktree .claude/worktrees/feat-academy-rewrite-blog-fix-task-def-d1 (wave 3, managed mode)"
     }
   ],
   "plan_review_state": {

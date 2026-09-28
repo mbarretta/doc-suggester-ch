@@ -9,12 +9,14 @@
       "autonomy": "managed",
       "tasks_total": 5,
       "tasks_complete": 4,
-      "wave_state": "idle",
-      "current_wave": null,
-      "wave_tasks_in_flight": [],
+      "wave_state": "in_flight",
+      "current_wave": 3,
+      "wave_tasks_in_flight": [
+        "def-d1"
+      ],
       "paused_reason": "",
       "deferred_open": 0,
-      "updated": "2026-09-28T13:09:40-04:00",
+      "updated": "2026-09-28T13:09:57-04:00",
       "path": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/plans/feat-academy-rewrite-blog-fix.json"
     }
   ]
