@@ -424,8 +424,8 @@
         "rejected": 1,
         "recorded_at": "2026-09-28T12:24:29-04:00"
       },
-      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-4",
-      "branch": "harness/feat-academy-rewrite-blog-fix/task-4",
+      "worktree": "",
+      "branch": "",
       "why": "README currently describes the dead TI scraper (29 courses, signed-in/member URLs) and says nothing about the blog archive's edit/removal-aware refresh - it should describe what the code now actually does.",
       "acceptance_criteria": [
         {
@@ -556,6 +556,13 @@
         "timestamp": "2026-09-28T12:18:29-04:00",
         "phase": "7.4",
         "decision": "merged wave 1: tasks 1,2,3 -> main; pushed",
+        "reason": "managed run contract: merge-and-push pre-authorized at the go gate"
+      },
+      {
+        "id": "ad2",
+        "timestamp": "2026-09-28T12:24:51-04:00",
+        "phase": "7.4",
+        "decision": "merged wave 2: task 4 -> main; pushed",
         "reason": "managed run contract: merge-and-push pre-authorized at the go gate"
       }
     ]
