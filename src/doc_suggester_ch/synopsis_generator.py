@@ -3,12 +3,14 @@
 The blog index sent to the model holds ~1000 posts. Raw excerpts are the first
 300 characters of a post, which is often a preamble that says nothing about the
 subject. A short retrieval-oriented synopsis per post makes the index far more
-selective for the same token budget, and only has to be generated once.
+selective for the same token budget, and only has to be regenerated when a
+post's content changes (tracked via a content hash in the cache).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import sys
@@ -40,13 +42,37 @@ def synopses_path(project_root: Path) -> Path:
     return project_root / "output" / _SYNOPSES_NAME
 
 
-def load_synopses(project_root: Path) -> dict[str, str]:
-    """Read cached synopses; returns {} when missing or corrupt."""
+def _content_hash(text: str) -> str:
+    """Same formula as Academy's enrichment cache: sha256(text)[:16]."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def load_synopses(project_root: Path) -> dict[str, dict[str, str]]:
+    """Read the cached {slug: {"synopsis", "content_hash"}} mapping.
+
+    Returns {} when the file is missing or corrupt. A legacy bare-string
+    entry ({slug: "synopsis text"}) is normalized to
+    {"synopsis": text, "content_hash": ""} on read - "" never matches a
+    real content hash, so the entry regenerates exactly once and then
+    upgrades to the current on-disk shape.
+    """
     try:
         data = json.loads(synopses_path(project_root).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for slug, entry in data.items():
+        if isinstance(entry, str):
+            normalized[slug] = {"synopsis": entry, "content_hash": ""}
+        elif isinstance(entry, dict):
+            normalized[slug] = entry
+    return normalized
+
+
+def _flatten(cache: dict[str, dict[str, str]]) -> dict[str, str]:
+    return {slug: entry["synopsis"] for slug, entry in cache.items()}
 
 
 async def generate_synopses(
@@ -54,15 +80,22 @@ async def generate_synopses(
     posts: list[BlogPost],
     provider: LLMProvider | str | None = None,
 ) -> dict[str, str]:
-    """Generate and cache synopses for posts that lack one.
+    """Generate and cache synopses for posts that lack one or changed since caching.
 
-    Returns the full mapping of slug -> synopsis (cached plus newly generated).
+    Returns the full mapping of slug -> synopsis text (cached plus newly
+    generated); the richer on-disk {synopsis, content_hash} shape never
+    leaks into this return value.
     """
-    synopses = load_synopses(project_root)
-    missing = [post for post in posts if url_to_slug(post.url) not in synopses]
+    cache = load_synopses(project_root)
+    missing = [
+        post
+        for post in posts
+        if cache.get(url_to_slug(post.url), {}).get("content_hash")
+        != _content_hash(post.full_content)
+    ]
 
     if not missing:
-        return synopses
+        return _flatten(cache)
 
     print(
         f"Generating synopses for {len(missing)} posts "
@@ -74,17 +107,18 @@ async def generate_synopses(
     semaphore = asyncio.Semaphore(_CONCURRENCY)
     failures: list[str] = []
 
-    async def generate_one(post: BlogPost) -> tuple[str, str | None]:
+    async def generate_one(post: BlogPost) -> tuple[str, str | None, str]:
         slug = url_to_slug(post.url)
+        content_hash = _content_hash(post.full_content)
         prompt = _PROMPT.format(title=post.title, content=post.full_content[:3000])
         async with semaphore:
             try:
                 text = await llm.complete(prompt, max_tokens=200)
-                return slug, text.strip() or None
+                return slug, text.strip() or None, content_hash
             except Exception as exc:  # noqa: BLE001 — one post must not kill the run
                 logger.debug("failed to generate synopsis for %s: %s", slug, exc)
                 failures.append(f"{type(exc).__name__}: {exc}")
-                return slug, None
+                return slug, None, content_hash
 
     results = await asyncio.gather(*(generate_one(post) for post in missing))
 
@@ -97,17 +131,17 @@ async def generate_synopses(
             file=sys.stderr,
             flush=True,
         )
-        return synopses
+        return _flatten(cache)
 
-    for slug, synopsis in results:
+    for slug, synopsis, content_hash in results:
         if synopsis:
-            synopses[slug] = synopsis
+            cache[slug] = {"synopsis": synopsis, "content_hash": content_hash}
 
     path = synopses_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(dict(sorted(synopses.items())), indent=2, ensure_ascii=False),
+        json.dumps(dict(sorted(cache.items())), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    return synopses
+    return _flatten(cache)
