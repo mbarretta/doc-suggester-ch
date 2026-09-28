@@ -287,11 +287,21 @@ async def refresh_blogs(
             return 0
 
         todo = select_todo(discovered, checkpoint)
-        if not todo:
+        discovered_slugs = {url_to_slug(url) for url, _ in discovered}
+        removed_slugs = set(checkpoint) - discovered_slugs
+        if not todo and not removed_slugs:
+            # Truly nothing to do: no post needs (re)scraping, and no
+            # checkpointed slug has disappeared from the sitemap. If a post
+            # HAD been removed, we must still fall through to the
+            # merge-rebuild below even with an empty `todo`, or the removed
+            # post's stale archive/checkpoint entries would linger forever.
             _status(f"Blog archive up to date ({len(discovered)} posts).")
             return 0
 
-        _status(f"Scraping {len(todo)} blog posts ({len(discovered) - len(todo)} already cached)...")
+        if todo:
+            _status(f"Scraping {len(todo)} blog posts ({len(discovered) - len(todo)} already cached)...")
+        else:
+            _status(f"No posts to (re)scrape, but pruning {len(removed_slugs)} removed post(s)...")
 
         semaphore = asyncio.Semaphore(concurrency)
         done = 0
@@ -337,8 +347,8 @@ async def refresh_blogs(
 
     # Prune checkpoint entries for slugs the sitemap no longer carries, so a
     # post that later reappears (even with its original lastmod) is eligible
-    # for re-scraping instead of being permanently skipped.
-    discovered_slugs = {url_to_slug(url) for url, _ in discovered}
+    # for re-scraping instead of being permanently skipped. (`discovered_slugs`
+    # was already computed above, before the early-return check.)
     checkpoint = {slug: entry for slug, entry in checkpoint.items() if slug in discovered_slugs}
     save_checkpoint(project_root, checkpoint)
 

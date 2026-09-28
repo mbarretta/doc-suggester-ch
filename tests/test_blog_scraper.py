@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
+import doc_suggester_ch.blog_scraper as blog_scraper
 from doc_suggester_ch.blog_scraper import (
     ScrapedPost,
     _blogpost_to_scraped,
@@ -279,26 +281,60 @@ def test_blogpost_to_scraped_round_trips_through_format_post(tmp_path: Path):
     assert round_tripped.markdown == post.markdown
 
 
-def test_checkpoint_and_archive_symmetry_allows_revival_after_removal():
-    """A post pruned from both the checkpoint and archive on removal must be
-    re-selected for scraping if it later reappears — even with its original,
-    unchanged lastmod. Without symmetric checkpoint pruning, the stale
-    checkpoint entry would suppress it forever."""
-    url = "https://clickhouse.com/blog/revived-post"
-    original_lastmod = "2026-01-05T10:00:00.000Z"
-    checkpoint = {"revived-post": {"lastmod": original_lastmod}}
+async def test_checkpoint_and_archive_symmetry_allows_revival_after_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A post removed from the sitemap must be pruned from both the archive
+    and the checkpoint even when every OTHER post's lastmod is unchanged
+    (i.e. select_todo returns []), and it must be re-selected for scraping
+    if it later reappears with its original, unchanged lastmod.
 
-    # Round 2: the post is removed from the sitemap. `refresh_blogs` prunes
-    # any checkpoint entry whose slug is no longer in `discovered`.
-    discovered_after_removal: list[tuple[str, str]] = []
-    discovered_slugs = {url_to_slug(u) for u, _ in discovered_after_removal}
-    checkpoint = {slug: entry for slug, entry in checkpoint.items() if slug in discovered_slugs}
-    assert checkpoint == {}
+    This drives the real `refresh_blogs`, not a re-implementation of its
+    pruning logic, so it actually exercises the early-return gate: a naive
+    `if not todo: return 0` would skip the merge-rebuild/prune step entirely
+    here, since nothing else changed, and the removed post would linger in
+    both the archive and the checkpoint forever.
+    """
+    from doc_suggester_ch.blog_manager import archive_path
 
-    # Round 3: the post reappears with its ORIGINAL, unchanged lastmod. A
-    # naive "have I ever seen this lastmod" check would wrongly skip it, but
-    # since the checkpoint entry was pruned, select_todo must still pick it up.
-    discovered_after_revival = [(url, original_lastmod)]
-    todo = select_todo(discovered_after_revival, checkpoint)
+    post_a = ScrapedPost(
+        slug="post-a", title="Post A", url="https://clickhouse.com/blog/post-a",
+        date="2026-01-01", authors=[], markdown="Body A",
+    )
+    post_b = ScrapedPost(
+        slug="post-b", title="Post B", url="https://clickhouse.com/blog/post-b",
+        date="2026-01-02", authors=[], markdown="Body B",
+    )
+    a_lastmod = "2026-01-05T10:00:00.000Z"
+    b_lastmod = "2026-01-06T10:00:00.000Z"
 
-    assert todo == [(url, original_lastmod)]
+    path = archive_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# H\n\n---\n\n" + format_post(post_a) + format_post(post_b), encoding="utf-8")
+    save_checkpoint(tmp_path, {
+        "post-a": {"title": "Post A", "url": post_a.url, "date": "2026-01-01", "scraped_at": "t", "lastmod": a_lastmod},
+        "post-b": {"title": "Post B", "url": post_b.url, "date": "2026-01-02", "scraped_at": "t", "lastmod": b_lastmod},
+    })
+
+    # Sitemap now only returns post-a, with its lastmod unchanged: post-b was
+    # retired and nothing else was edited, so select_todo(...) == [].
+    monkeypatch.setattr(
+        blog_scraper, "discover_posts", AsyncMock(return_value=[(post_a.url, a_lastmod)])
+    )
+    count = await blog_scraper.refresh_blogs(tmp_path)
+
+    assert count == 0  # nothing new was (re)scraped this run
+
+    archive_text = (tmp_path / "output" / blog_scraper.ARCHIVE_NAME).read_text(encoding="utf-8")
+    assert "Post A" in archive_text
+    assert "Post B" not in archive_text  # merge-rebuild pruned the removed post
+
+    checkpoint = load_checkpoint(tmp_path)
+    assert "post-a" in checkpoint
+    assert "post-b" not in checkpoint  # checkpoint pruned symmetrically
+
+    # Revival: post-b reappears with its ORIGINAL, unchanged lastmod. A naive
+    # "have I ever seen this lastmod" check would wrongly skip it, but since
+    # the checkpoint entry was pruned, select_todo must pick it up again.
+    todo = select_todo([(post_a.url, a_lastmod), (post_b.url, b_lastmod)], checkpoint)
+    assert (post_b.url, b_lastmod) in todo
