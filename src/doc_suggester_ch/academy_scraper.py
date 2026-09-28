@@ -22,7 +22,6 @@ and intent signals.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import html as html_lib
 import json
 import logging
@@ -37,6 +36,7 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 from doc_suggester_ch.fetcher import fetch_text, make_client, parse_sitemap
+from doc_suggester_ch.hashing import _content_hash
 from doc_suggester_ch.llm import LLMProvider, extract_json, resolve_provider
 
 logger = logging.getLogger(__name__)
@@ -240,10 +240,6 @@ def parse_lesson_transcript(html: str) -> str:
         tag.decompose()
     markdown = markdownify(str(article), heading_style="ATX")
     return re.sub(r"\n{3,}", "\n\n", markdown).strip()
-
-
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _assemble_enrichment_text(
