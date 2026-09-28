@@ -1,20 +1,22 @@
 """Scrapes the ClickHouse Academy catalog into output/training-catalog.json.
 
-The Academy runs on a Thought Industries LMS. `/main_catalog` and
-`/user_catalog_class/...` require a login, but the `visitor_` equivalents of the
-same pages are public and carry the same content, so this scraper uses those:
+The Academy runs on Skilljar. Course discovery uses the public sitemap.xml
+(same shape the blog scraper already consumes), and every course-root page
+embeds a structured `skilljarCourse` JS object (title, short/long
+description, a flat `tags` list) plus plain anchor tags listing its lessons
+in curriculum order. Every lesson page renders a full, publicly accessible,
+timestamped transcript with no login required.
 
-  1. /visitor_class_catalog                 -> learning paths (categories)
-  2. /visitor_class_catalog/category/{id}   -> course ids per path
-  3. /visitor_catalog_class/show/{id}       -> course detail
+Lesson transcripts are fetched and used only as enrichment input for the
+one-time LLM call (difficulty/summary/technologies/personas/
+problems_addressed/intent_signals) — they are never persisted into
+Course.description or training-catalog.json, which stays a small
+course-level blurb.
 
-Course ids are shared between the visitor and logged-in views, so a course
-scraped here resolves under /user_catalog_class/show/{id} for a logged-in
-reader. Both URLs are recorded per course.
-
-Scraped facts (title, learning paths, style, module count, About prose) are
-then enriched by one Claude call per course to derive the fields the LMS does
-not publish: difficulty, personas, problems addressed, and intent signals.
+Scraped facts (title, learning paths, module outline, description +
+transcripts) are then enriched by one Claude call per course to derive the
+fields the LMS does not publish: difficulty, personas, problems addressed,
+and intent signals.
 """
 
 from __future__ import annotations
@@ -34,54 +36,57 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
-from doc_suggester_ch.fetcher import fetch_text, make_client
+from doc_suggester_ch.fetcher import fetch_text, make_client, parse_sitemap
 from doc_suggester_ch.llm import LLMProvider, extract_json, resolve_provider
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://learn.clickhouse.com"
-CATALOG_URL = f"{BASE_URL}/visitor_class_catalog"
-VISITOR_CLASS_URL = f"{BASE_URL}/visitor_catalog_class/show"
-MEMBER_CLASS_URL = f"{BASE_URL}/user_catalog_class/show"
+SITEMAP_URL = f"{BASE_URL}/sitemap.xml"
 
 CATALOG_NAME = "training-catalog.json"
 
 _ENRICH_CONCURRENCY = 5
+_LESSON_CONCURRENCY = 10  # mirrors fetcher.DEFAULT_CONCURRENCY
 
-_CATEGORY_LINK_RE = re.compile(
-    r'href="/visitor_class_catalog/category/(\d+)"[^>]*>(.*?)</a>', re.DOTALL
-)
-_CLASS_ID_RE = re.compile(r"/visitor_catalog_class/show/(\d+)")
 _TAG_RE = re.compile(r"<[^>]+>")
-_MODULE_RE = re.compile(r"\*\*Module\s+(\d+)\*\*\s*:?\s*([^\n*]{3,90})|Module\s+(\d+)\s*:\s*([^\n*]{3,90})")
 
-# Fields the LMS renders in the "Info" side panel.
-_INFO_KEYS = ("Time zone", "Style", "Modules", "Category", "Duration", "Level")
+# Course-root URLs are exactly one path segment: https://learn.clickhouse.com/{slug}.
+# /page/... and /path/... pages are two segments and already excluded by the
+# regex itself; _NON_COURSE_SLUGS is a defensive backstop for a bare single
+# -segment match of either name.
+_COURSE_ROOT_RE = re.compile(r"^https://learn\.clickhouse\.com/([a-z0-9-]+)$")
+_NON_COURSE_SLUGS = {"page", "path"}
 
-# Site-wide fallback text used when a course has no description of its own.
-_GENERIC_DESC = "Learn ClickHouse with the ClickHouse Academy"
+# Matched against the whole <script> tag's text, not a pre-isolated {...}
+# block — the field names are specific enough not to collide with the
+# script's other `var` declarations.
+_SCALAR_FIELD_RE = re.compile(r"(\w+):\s*'((?:[^'\\]|\\.)*)'")
+_TAGS_ARRAY_RE = re.compile(r"tags:\s*\[(.*?)\]", re.DOTALL)
+_TAG_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+_SEPARATOR_TITLE_RE = re.compile(r"^\s*\[separator\]", re.IGNORECASE)
+_QUIZ_TITLE_RE = re.compile(r"take the quiz", re.IGNORECASE)
 
 
 @dataclass
 class Course:
-    id: str
+    id: str                                               # course slug, e.g. "data-warehousing-with-clickhouse"
     title: str
-    url: str                  # public (visitor) URL
-    member_url: str           # logged-in URL for the same course
-    learning_paths: list[str] = field(default_factory=list)
-    language: str = "en"      # "en", or "non-en" for the localized paths
-    style: str = ""           # e.g. "Self paced", "Micro course"
-    module_count: str = ""
-    modules: list[str] = field(default_factory=list)
-    description: str = ""     # About prose, as markdown
-    # LLM-derived (see enrich_courses)
+    url: str                                              # https://learn.clickhouse.com/{slug} — the only URL now
+    learning_paths: list[str] = field(default_factory=list)  # = Skilljar's raw `tags` array, verbatim
+    language: str = "en"                                  # unchanged ASCII-title heuristic
+    module_count: str = ""                                # count of non-quiz lesson entries
+    modules: list[str] = field(default_factory=list)       # ordered lesson titles (quiz entries kept)
+    description: str = ""                                 # short_description + markdown(long_description_html)
     difficulty: str = ""
     summary: str = ""
     technologies: list[str] = field(default_factory=list)
     personas: list[str] = field(default_factory=list)
     problems_addressed: list[str] = field(default_factory=list)
     intent_signals: list[str] = field(default_factory=list)
-    content_hash: str = ""
+    content_hash: str = ""                                # sha256[:16] of the enrichment text, not of description alone
 
 
 def _status(msg: str) -> None:
@@ -92,140 +97,258 @@ def _strip_tags(fragment: str) -> str:
     return html_lib.unescape(_TAG_RE.sub("", fragment)).strip()
 
 
-def parse_categories(html: str) -> dict[str, str]:
-    """Map category id -> learning path name from the catalog root page."""
-    return {
-        cid: name
-        for cid, raw in _CATEGORY_LINK_RE.findall(html)
-        if (name := _strip_tags(raw))
+def discover_course_slugs(entries: list[tuple[str, str]]) -> list[str]:
+    """Filter fetcher.parse_sitemap() output to candidate course-root slugs.
+
+    Cannot filter out the "[separator] ..." decoy by URL alone — that needs
+    the fetched page's title (see parse_course_page).
+    """
+    slugs: list[str] = []
+    for url, _lastmod in entries:
+        match = _COURSE_ROOT_RE.match(url)
+        if not match:
+            continue
+        slug = match.group(1)
+        if slug in _NON_COURSE_SLUGS:
+            continue
+        slugs.append(slug)
+    return slugs
+
+
+def _find_skilljar_script(soup: BeautifulSoup) -> str | None:
+    for script in soup.find_all("script"):
+        text = script.string or script.get_text()
+        if text and "skilljarCourse" in text:
+            return text
+    return None
+
+
+def _unescape_js_string(raw: str) -> str:
+    """Undo the JS single-quoted string escapes we actually see: \\uXXXX and \\'.
+
+    Deliberately manual regex substitution rather than Python's
+    unicode_escape codec, which chokes on stray/unrelated backslashes.
+    """
+    text = _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), raw)
+    return text.replace("\\'", "'")
+
+
+def parse_skilljar_course_block(html: str) -> dict | None:
+    """Extract the embedded `skilljarCourse` object via regex only (no JS eval).
+
+    Returns {id, title, short_description, long_description_html, tags} (tags
+    may be []), or None if no such script tag is present on the page.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    script_text = _find_skilljar_script(soup)
+    if script_text is None:
+        return None
+
+    fields: dict = {
+        key: _unescape_js_string(value)
+        for key, value in _SCALAR_FIELD_RE.findall(script_text)
     }
 
-
-def parse_class_ids(html: str) -> list[str]:
-    """Return the course ids linked from a category page."""
-    return sorted(set(_CLASS_ID_RE.findall(html)))
-
-
-def _extract_info(soup: BeautifulSoup) -> dict[str, str]:
-    """Read the Info side panel into a {lowercased key: value} dict."""
-    lines = [line.strip() for line in soup.get_text("\n").split("\n") if line.strip()]
-    if "Info" not in lines:
-        return {}
-    tail = lines[lines.index("Info") + 1:]
-    info: dict[str, str] = {}
-    for index, line in enumerate(tail[:-1]):
-        key = line.rstrip(":")
-        if key in _INFO_KEYS:
-            info.setdefault(key.lower().replace(" ", "_"), tail[index + 1])
-    return info
+    tags_match = _TAGS_ARRAY_RE.search(script_text)
+    fields["tags"] = (
+        [_unescape_js_string(item) for item in _TAG_ITEM_RE.findall(tags_match.group(1))]
+        if tags_match
+        else []
+    )
+    return fields
 
 
-def _extract_about(soup: BeautifulSoup) -> str:
-    """Convert the About column to markdown.
-
-    Taking the container's HTML (rather than page text) keeps sentences intact —
-    the prose is peppered with inline <strong>/<em> that shred a text dump.
-    """
-    column = soup.find("div", class_="leftColumn")
-    if column is None:
-        return ""
-    for tag in column.find_all(["script", "style", "noscript", "form", "svg"]):
+def _html_to_markdown(html_fragment: str) -> str:
+    """Convert a course description fragment to markdown, stripping badge cruft."""
+    soup = BeautifulSoup(html_fragment, "html.parser")
+    for tag in soup.find_all(["script", "style", "noscript", "form", "svg"]):
         tag.decompose()
-    markdown = markdownify(str(column), heading_style="ATX")
-    markdown = re.sub(r"^\s*About\s*\n+", "", markdown)
-    markdown = re.sub(r"^\s*##\s*About\s*\n+", "", markdown)
+    markdown = markdownify(str(soup), heading_style="ATX")
     markdown = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", markdown)  # LMS badge images
     return re.sub(r"\n{3,}", "\n\n", markdown).strip()
 
 
-def parse_course_html(class_id: str, html: str) -> Course:
-    """Extract a Course from a visitor course-detail page."""
+def parse_lesson_list(slug: str, html: str) -> list[tuple[str, str]]:
+    """Return ordered, de-duplicated (lesson_path, lesson_title) tuples for this course."""
     soup = BeautifulSoup(html, "html.parser")
-
-    title = ""
-    title_tag = soup.find("title")
-    if title_tag:
-        title = title_tag.get_text(strip=True)
-        title = re.sub(r"^ClickHouse Academy\s*-\s*", "", title).strip()
-
-    about = _extract_about(soup)
-    info = _extract_info(soup)
-
-    if not about:
-        meta = soup.find("meta", attrs={"name": "description"})
-        candidate = (meta.get("content") or "").strip() if meta else ""
-        about = "" if _GENERIC_DESC in candidate else candidate
-
-    modules: list[str] = []
-    for groups in _MODULE_RE.findall(about):
-        number = groups[0] or groups[2]
-        name = (groups[1] or groups[3]).strip(" :-—")
-        if number and name:
-            entry = f"Module {number}: {name}"
-            if entry not in modules:
-                modules.append(entry)
-
-    # The catalog carries localized copies of some paths (currently Japanese).
-    # Tag rather than drop them, so an APJ prospect can still be matched.
-    language = "en" if title.isascii() else "non-en"
-
-    return Course(
-        id=class_id,
-        title=title or f"Course {class_id}",
-        url=f"{VISITOR_CLASS_URL}/{class_id}",
-        member_url=f"{MEMBER_CLASS_URL}/{class_id}",
-        language=language,
-        style=info.get("style", ""),
-        module_count=info.get("modules", ""),
-        modules=modules,
-        description=about,
-        content_hash=hashlib.sha256(about.encode("utf-8")).hexdigest()[:16],
-    )
-
-
-async def scrape_catalog(client: httpx.AsyncClient) -> list[Course]:
-    """Crawl all three catalog levels and return the courses found."""
-    root = await fetch_text(client, CATALOG_URL)
-    categories = parse_categories(root)
-    if not categories:
-        _status("Warning: no learning paths found in the Academy catalog.")
-        return []
-    _status(f"Found {len(categories)} learning paths.")
-
-    paths_by_class: dict[str, set[str]] = {}
-    category_pages = await asyncio.gather(
-        *(fetch_text(client, f"{CATALOG_URL}/category/{cid}") for cid in categories),
-        return_exceptions=True,
-    )
-    for (cid, name), page in zip(categories.items(), category_pages):
-        if isinstance(page, BaseException):
-            logger.warning("failed to fetch category %s: %s", cid, page)
+    prefix = f"/{slug}/"
+    seen: set[str] = set()
+    lessons: list[tuple[str, str]] = []
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        path = href[len(BASE_URL):] if href.startswith(BASE_URL) else href
+        if not path.startswith(prefix):
             continue
-        for class_id in parse_class_ids(page):
-            paths_by_class.setdefault(class_id, set()).add(name)
+        title = anchor.get_text(strip=True)
+        if not title or path in seen:
+            continue
+        seen.add(path)
+        lessons.append((path, title))
+    return lessons
 
-    if not paths_by_class:
-        _status("Warning: learning paths contained no courses.")
-        return []
-    _status(f"Found {len(paths_by_class)} courses; fetching details...")
 
-    detail_pages = await asyncio.gather(
-        *(fetch_text(client, f"{VISITOR_CLASS_URL}/{cid}") for cid in paths_by_class),
+def parse_course_page(slug: str, html: str) -> tuple[Course, list[tuple[str, str]]] | None:
+    """Build a Course + its ordered lesson list from a course-root page.
+
+    Returns None if there's no skilljarCourse block, or if the title matches
+    the "[separator] ..." catalog-divider decoy.
+    """
+    block = parse_skilljar_course_block(html)
+    if block is None:
+        return None
+
+    title = block.get("title", "")
+    if _SEPARATOR_TITLE_RE.match(title):
+        return None
+
+    lessons = parse_lesson_list(slug, html)
+    modules = [lesson_title for _path, lesson_title in lessons]
+    module_count = sum(1 for module in modules if not _QUIZ_TITLE_RE.search(module))
+
+    description = "\n\n".join([
+        block.get("short_description", ""),
+        _html_to_markdown(block.get("long_description_html", "")),
+    ])
+
+    course = Course(
+        id=slug,
+        title=title,
+        url=f"{BASE_URL}/{slug}",
+        learning_paths=list(block.get("tags", [])),
+        language="en" if title.isascii() else "non-en",
+        module_count=str(module_count),
+        modules=modules,
+        description=description,
+        content_hash="",
+    )
+    return course, lessons
+
+
+def parse_lesson_transcript(html: str) -> str:
+    """Return the lesson transcript as markdown, or "" for quiz pages.
+
+    Strips <span class="ch-ts"> timestamps and <div class="ch-slide">
+    images before converting to markdown.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article", class_="ch-lesson")
+    if article is None:
+        return ""
+    for tag in article.find_all("span", class_="ch-ts"):
+        tag.decompose()
+    for tag in article.find_all("div", class_="ch-slide"):
+        tag.decompose()
+    markdown = markdownify(str(article), heading_style="ATX")
+    return re.sub(r"\n{3,}", "\n\n", markdown).strip()
+
+
+def _content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _assemble_enrichment_text(
+    description: str,
+    lessons: list[tuple[str, str]],
+    transcripts: list[str],
+) -> str:
+    """Pure. Append a "## Lessons" section for every non-empty transcript, in order.
+
+    Returns the bare description unchanged when no transcript is non-empty.
+    """
+    sections = [
+        f"### {title}\n\n{transcript}"
+        for (_path, title), transcript in zip(lessons, transcripts)
+        if transcript.strip()
+    ]
+    if not sections:
+        return description
+    return description + "\n\n## Lessons\n\n" + "\n\n".join(sections)
+
+
+async def _fetch_lesson_transcripts(
+    client: httpx.AsyncClient,
+    lesson_map: dict[str, list[tuple[str, str]]],
+) -> dict[str, list[str]]:
+    """Fetch every course's lesson transcripts under one shared semaphore.
+
+    A lesson fetch/parse failure yields "" at that lesson's original
+    position — it never aborts the course or the wider catalog refresh.
+    """
+    semaphore = asyncio.Semaphore(_LESSON_CONCURRENCY)
+
+    async def fetch_one(path: str) -> str:
+        async with semaphore:
+            try:
+                html = await fetch_text(client, f"{BASE_URL}{path}")
+                return parse_lesson_transcript(html)
+            except Exception as exc:  # noqa: BLE001 — one bad lesson must not kill the course
+                logger.warning("failed to fetch lesson %s: %s", path, exc)
+                return ""
+
+    course_ids = list(lesson_map.keys())
+    flat_paths = [path for course_id in course_ids for path, _title in lesson_map[course_id]]
+    results = await asyncio.gather(*(fetch_one(path) for path in flat_paths))
+
+    transcripts: dict[str, list[str]] = {}
+    offset = 0
+    for course_id in course_ids:
+        count = len(lesson_map[course_id])
+        transcripts[course_id] = results[offset:offset + count]
+        offset += count
+    return transcripts
+
+
+async def scrape_catalog(client: httpx.AsyncClient) -> tuple[list[Course], dict[str, str]]:
+    """Crawl the sitemap + course/lesson pages and return (courses, enrichment_text).
+
+    enrichment_text maps course.id -> the description-plus-transcripts text
+    that fed content_hash and the LLM enrichment call.
+    """
+    sitemap_xml = await fetch_text(client, SITEMAP_URL)
+    entries = parse_sitemap(sitemap_xml)
+    slugs = discover_course_slugs(entries)
+    if not slugs:
+        _status("Warning: no course slugs found in the Academy sitemap.")
+        return [], {}
+    _status(f"Found {len(slugs)} candidate course slugs.")
+
+    pages = await asyncio.gather(
+        *(fetch_text(client, f"{BASE_URL}/{slug}") for slug in slugs),
         return_exceptions=True,
     )
 
     courses: list[Course] = []
-    for class_id, page in zip(paths_by_class, detail_pages):
+    lesson_map: dict[str, list[tuple[str, str]]] = {}
+    for slug, page in zip(slugs, pages):
         if isinstance(page, BaseException):
-            logger.warning("failed to fetch course %s: %s", class_id, page)
+            logger.warning("failed to fetch course page %s: %s", slug, page)
             continue
-        course = parse_course_html(class_id, page)
-        course.learning_paths = sorted(paths_by_class[class_id])
+        parsed = parse_course_page(slug, page)
+        if parsed is None:
+            continue
+        course, lessons = parsed
         courses.append(course)
+        lesson_map[course.id] = lessons
 
-    # English paths first — the localized copies are duplicates for most readers.
+    if not courses:
+        _status("Warning: Academy sitemap contained no parseable courses.")
+        return [], {}
+    _status(f"Found {len(courses)} courses; fetching lesson transcripts...")
+
+    transcripts_by_course = await _fetch_lesson_transcripts(client, lesson_map)
+
+    enrichment_text: dict[str, str] = {}
+    for course in courses:
+        lessons = lesson_map.get(course.id, [])
+        transcripts = transcripts_by_course.get(course.id, [])
+        text = _assemble_enrichment_text(course.description, lessons, transcripts)
+        enrichment_text[course.id] = text
+        course.content_hash = _content_hash(text)
+
+    # English courses first — the localized copies are duplicates for most readers.
     courses.sort(key=lambda c: (c.language != "en", c.learning_paths[:1], c.title))
-    return courses
+    _status(f"Scraped {len(courses)} courses across {sum(len(v) for v in lesson_map.values())} lessons.")
+    return courses, enrichment_text
 
 
 _ENRICH_PROMPT = """\
@@ -242,7 +365,6 @@ Return ONLY a JSON object with these keys:
 
 Course title: {title}
 Learning paths: {paths}
-Style: {style}
 Modules: {modules}
 
 Course description:
@@ -263,11 +385,16 @@ async def enrich_courses(
     courses: list[Course],
     cached: dict[str, dict],
     provider: LLMProvider | str | None = None,
+    source_text: dict[str, str] | None = None,
 ) -> None:
     """Fill LLM-derived fields in place, reusing cached values where valid.
 
-    A cached entry is reused when its content_hash still matches, so re-running
-    only pays for courses whose description actually changed.
+    A cached entry is reused when its content_hash still matches, so
+    re-running only pays for courses whose enrichment source actually
+    changed. `source_text`, when provided, supplies the richer
+    description-plus-transcripts text used to build each prompt (keyed by
+    course.id); omitting it falls back to `course.description`, exactly as
+    before.
     """
     todo = []
     for course in courses:
@@ -289,12 +416,12 @@ async def enrich_courses(
     failures: list[str] = []
 
     async def enrich_one(course: Course) -> None:
+        description_source = (source_text or {}).get(course.id, course.description)
         prompt = _ENRICH_PROMPT.format(
             title=course.title,
             paths=", ".join(course.learning_paths) or "(none)",
-            style=course.style or "(unknown)",
             modules="; ".join(course.modules) or "(not listed)",
-            description=course.description[:6000],
+            description=description_source[:6000],
         )
         async with semaphore:
             try:
@@ -351,18 +478,18 @@ async def refresh_training(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     async with make_client() as client:
-        courses = await scrape_catalog(client)
+        courses, enrichment_text = await scrape_catalog(client)
 
     if not courses:
         _status("Warning: Academy catalog scrape returned nothing — keeping existing catalog.")
         return 0
 
     cached = {} if force else _load_cached_courses(project_root)
-    await enrich_courses(courses, cached, provider=provider)
+    await enrich_courses(courses, cached, provider=provider, source_text=enrichment_text)
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source": CATALOG_URL,
+        "source": SITEMAP_URL,
         "courses": [asdict(course) for course in courses],
     }
     catalog_path(project_root).write_text(
