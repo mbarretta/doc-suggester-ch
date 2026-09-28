@@ -3,7 +3,7 @@
     {
       "slug": "feat-academy-rewrite-blog-fix",
       "title": "Rewrite Academy scraper for Skilljar; fix blog/synopsis staleness",
-      "status": "planned",
+      "status": "complete",
       "mode": "dev",
       "parallelism": "auto",
       "autonomy": "managed",
@@ -14,7 +14,7 @@
       "wave_tasks_in_flight": [],
       "paused_reason": "",
       "deferred_open": 1,
-      "updated": "2026-09-28T12:31:38-04:00",
+      "updated": "2026-09-28T12:31:50-04:00",
       "path": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/plans/feat-academy-rewrite-blog-fix.json"
     }
   ]

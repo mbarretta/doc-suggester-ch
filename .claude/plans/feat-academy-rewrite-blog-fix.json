@@ -4,7 +4,7 @@
   "kind": "feature",
   "mode": "dev",
   "created": "2026-09-28",
-  "status": "planned",
+  "status": "complete",
   "context": "ClickHouse Academy migrated its LMS from Thought Industries to Skilljar; academy_scraper.py's entire URL scheme is dead and produces zero courses today, so it must be rewritten wholesale against the new site's sitemap, embedded skilljarCourse JS objects, and public lesson transcripts (transcripts feed the one-time LLM enrichment call only, never the persisted description). Raised alongside this rewrite, and independent of it, is a pre-existing bug in blog_scraper.py and synopsis_generator.py: both caches are presence-based rather than content-based, so an edited existing post is never re-scraped or re-synopsized. Full design, exact function signatures, dataclass shape, and test plan are hand-authored in .claude/plans/build-the-plan-abstract-boole.md; this plan operationalizes that spec into harness tasks.",
   "verification": "uv run pytest tests/",
   "constraints": [
