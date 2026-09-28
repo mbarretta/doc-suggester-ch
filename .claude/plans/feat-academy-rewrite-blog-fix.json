@@ -140,14 +140,19 @@
     {
       "id": "1",
       "title": "Rewrite academy_scraper.py for Skilljar catalog + transcript-enriched courses",
-      "status": "in_progress",
+      "status": "complete",
       "depends_on": [],
       "files": [
         "src/doc_suggester_ch/academy_scraper.py",
         "tests/test_academy_scraper.py"
       ],
       "origin": "planned",
-      "self_review": null,
+      "self_review": {
+        "applied": 0,
+        "deferred": 0,
+        "rejected": 1,
+        "recorded_at": "2026-09-28T12:11:54-04:00"
+      },
       "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-1",
       "branch": "harness/feat-academy-rewrite-blog-fix/task-1",
       "why": "The old Thought-Industries scraper is fully dead (0 courses); Skilljar exposes richer structured data (skilljarCourse JS object, ordered lesson lists, public transcripts) that should replace it wholesale per the hand-authored spec.",
@@ -220,19 +225,48 @@
         }
       ],
       "notes": "A single-file rewrite; keep BASE_URL, CATALOG_NAME, _ENRICH_CONCURRENCY, _strip_tags/_TAG_RE, catalog_path, _load_cached_courses as-is per the spec. Three non-blocking spot-checks called out in the spec (escaped apostrophe on a real course, lesson-anchor markup on a workshop/tutorial-styled course, logging final course/lesson counts on first live run) should be done during implementation but don't gate PASS on their own.",
-      "verdicts": []
+      "verdicts": [
+        {
+          "overall": "PASS",
+          "verification": "PASS",
+          "criteria": "PASS",
+          "criteria_critical": "PASS",
+          "constraints": "PASS",
+          "quality": "PASS",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [
+            "ac9: sort key uses c.language != \"en\" rather than the literal language string; produces the same order in practice, cosmetic deviation. Non-blocking.",
+            "ac9/ac14: orchestration wiring has no dedicated integration test in this diff - verified via source reading only, matching the specs own test-plan convention. Non-blocking."
+          ],
+          "notes": "Full suite (200 tests) and targeted test_academy_scraper.py -v run (20 tests) pass. Diff scoped to the two predicted files; three cross-task constraints held. Two critical ACs validated by source reading rather than a dedicated integration test, intentional per the spec test plan.",
+          "timestamp": "2026-09-28T12:11:53-04:00"
+        }
+      ],
+      "drift": {
+        "predicted": 2,
+        "touched": 2,
+        "unpredicted": 0,
+        "ratio": 0,
+        "recorded_at": "2026-09-28T12:11:54-04:00"
+      }
     },
     {
       "id": "2",
       "title": "Fix blog_scraper.py checkpoint staleness (lastmod-aware re-scrape, merge-rebuild archive)",
-      "status": "in_progress",
+      "status": "complete",
       "depends_on": [],
       "files": [
         "src/doc_suggester_ch/blog_scraper.py",
         "tests/test_blog_scraper.py"
       ],
       "origin": "planned",
-      "self_review": null,
+      "self_review": {
+        "applied": 0,
+        "deferred": 0,
+        "rejected": 0,
+        "recorded_at": "2026-09-28T12:17:54-04:00"
+      },
       "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-2",
       "branch": "harness/feat-academy-rewrite-blog-fix/task-2",
       "why": "The checkpoint is presence-based ('have I ever scraped this slug'), so an edited existing post's new content is never re-fetched; nothing downstream reads refresh_blogs's return value, so its semantics are free to change.",
@@ -263,19 +297,62 @@
         }
       ],
       "notes": "Verified via grep before this plan was authored: nothing reads refresh_blogs's return value today (cli.py's _run_init ignores it inside asyncio.gather and re-parses the archive from disk instead; suggester.py awaits and ignores it; every test only asserts awaited/not_awaited) - the return-value change is zero-compatibility-risk.",
-      "verdicts": []
+      "verdicts": [
+        {
+          "overall": "FAIL",
+          "verification": "PASS",
+          "criteria": "FAIL",
+          "criteria_critical": "FAIL",
+          "constraints": "PASS",
+          "quality": "FAIL",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [
+            "ac2: CRITICAL - checkpoint/archive pruning for removed posts only runs when select_todo is non-empty; the early return skips pruning entirely when no other post needs scraping.",
+            "ac3: CRITICAL - always-a-merge-rebuild does not hold on the early-return path; no rebuild happens there, so a removed post's archive entry is never re-evaluated on the next refresh.",
+            "quality: no test in the diff drives refresh_blogs itself through the removal-with-no-concurrent-edits scenario; the symmetry test reimplements pruning inline instead of calling the real function."
+          ],
+          "notes": "Verification is green and tests are additive, but a live reproduction against refresh_blogs shows the removal-pruning feature is unreachable when nothing else changed. ac2 and ac3 both violated, forcing overall FAIL.",
+          "timestamp": "2026-09-28T12:17:53-04:00"
+        },
+        {
+          "overall": "PASS",
+          "verification": "PASS",
+          "criteria": "PASS",
+          "criteria_critical": "PASS",
+          "constraints": "PASS",
+          "quality": "PASS",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [],
+          "notes": "202 passed. Bisected the fix directly against the pre-fix commit (fails there, passes at HEAD). All five ACs verified against code and tests. Test-integrity enumeration shows only added lines, no deletions, no skips. Diff scoped to the two predicted files; no cross-task constraints implicated.",
+          "timestamp": "2026-09-28T12:17:53-04:00"
+        }
+      ],
+      "drift": {
+        "predicted": 2,
+        "touched": 2,
+        "unpredicted": 0,
+        "ratio": 0,
+        "recorded_at": "2026-09-28T12:17:54-04:00"
+      }
     },
     {
       "id": "3",
       "title": "Fix synopsis_generator.py cache staleness (content-hash invalidation)",
-      "status": "in_progress",
+      "status": "complete",
       "depends_on": [],
       "files": [
         "src/doc_suggester_ch/synopsis_generator.py",
         "tests/test_synopsis_generator.py"
       ],
       "origin": "planned",
-      "self_review": null,
+      "self_review": {
+        "applied": 0,
+        "deferred": 0,
+        "rejected": 0,
+        "recorded_at": "2026-09-28T12:07:37-04:00"
+      },
       "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-3",
       "branch": "harness/feat-academy-rewrite-blog-fix/task-3",
       "why": "Without content-hash invalidation here, a post that task 2 makes blog_scraper.py correctly re-scrape would still keep serving its stale synopsis forever, silently undoing that fix.",
@@ -305,7 +382,28 @@
         }
       ],
       "notes": "This is ordinary defensive parsing of a pre-existing data file (the legacy-entry upgrade), not a compatibility shim in the logic.",
-      "verdicts": []
+      "verdicts": [
+        {
+          "overall": "PASS",
+          "verification": "PASS",
+          "criteria": "PASS",
+          "criteria_critical": "PASS",
+          "constraints": "PASS",
+          "quality": "PASS",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [],
+          "notes": "All five ACs (three critical) verified against the diff and a passing full-suite run (200 tests) plus a targeted -v run showing all four ac5-mandated new tests plus every pre-existing synopsis test passing. Test-integrity enumeration found no deletions/weakenings. Diff scoped to synopsis_generator.py and its test file only.",
+          "timestamp": "2026-09-28T12:07:37-04:00"
+        }
+      ],
+      "drift": {
+        "predicted": 2,
+        "touched": 2,
+        "unpredicted": 0,
+        "ratio": 0,
+        "recorded_at": "2026-09-28T12:07:37-04:00"
+      }
     },
     {
       "id": "4",
@@ -361,6 +459,18 @@
     {
       "timestamp": "2026-09-28T11:59:55-04:00",
       "note": "Dispatched task 3 to harness-task-runner in worktree /Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-3"
+    },
+    {
+      "timestamp": "2026-09-28T12:07:37-04:00",
+      "note": "Task 3 (synopsis_generator staleness): single-pass PASS, commit 9f2a8b6. Switched cache to {slug: {synopsis, content_hash}}, hashed as sha256(post.full_content)[:16]; legacy bare-string entries upgrade on read."
+    },
+    {
+      "timestamp": "2026-09-28T12:11:53-04:00",
+      "note": "Task 1 (academy_scraper Skilljar rewrite): single-pass PASS, commit 4032e69. Wholesale rewrite per spec; all 15 ACs incl. transcript isolation (ac8), content-hash/enrichment wiring (ac14), per-lesson failure isolation (ac15)."
+    },
+    {
+      "timestamp": "2026-09-28T12:17:53-04:00",
+      "note": "Task 2 (blog_scraper checkpoint staleness): 1 retry, PASS on retry, commit b61f9f4. Attempt 1's early-return in refresh_blogs skipped removal-pruning when no lastmod changed (critical ac2/ac3 FAIL); retry fixed by computing removed_slugs alongside todo and short-circuiting only when both empty."
     }
   ],
   "plan_review_state": {
