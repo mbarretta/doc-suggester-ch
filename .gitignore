@@ -11,3 +11,6 @@ output/
 
 # uv
 .python-version
+
+# harness worktrees
+.claude/worktrees/

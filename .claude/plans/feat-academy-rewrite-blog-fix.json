@@ -1,0 +1,411 @@
+{
+  "slug": "feat-academy-rewrite-blog-fix",
+  "title": "Rewrite Academy scraper for Skilljar; fix blog/synopsis staleness",
+  "kind": "feature",
+  "mode": "dev",
+  "created": "2026-09-28",
+  "status": "planned",
+  "context": "ClickHouse Academy migrated its LMS from Thought Industries to Skilljar; academy_scraper.py's entire URL scheme is dead and produces zero courses today, so it must be rewritten wholesale against the new site's sitemap, embedded skilljarCourse JS objects, and public lesson transcripts (transcripts feed the one-time LLM enrichment call only, never the persisted description). Raised alongside this rewrite, and independent of it, is a pre-existing bug in blog_scraper.py and synopsis_generator.py: both caches are presence-based rather than content-based, so an edited existing post is never re-scraped or re-synopsized. Full design, exact function signatures, dataclass shape, and test plan are hand-authored in .claude/plans/build-the-plan-abstract-boole.md; this plan operationalizes that spec into harness tasks.",
+  "verification": "uv run pytest tests/",
+  "constraints": [
+    "No changes to training_manager.py, suggester.py, or cli.py, or their tests (tests/test_training_manager.py, tests/test_cli.py, tests/test_suggester.py) - both parts' downstream contracts are already satisfied via .get()-style reads",
+    "Lesson transcripts feed the Academy LLM enrichment call only - never persisted into Course.description or training-catalog.json",
+    "generate_synopses's return value to its callers stays dict[str, str] (slug -> synopsis text) - the richer on-disk cache shape is a private implementation detail",
+    "enrich_courses's new source_text parameter is optional and backward-compatible - existing calls that omit it must behave exactly as before"
+  ],
+  "parallelism": "auto",
+  "wave_execution": "runner",
+  "autonomy": "managed",
+  "signing_disabled": false,
+  "parallel_plan": {
+    "computed_at": "2026-09-28T11:50:00-04:00",
+    "base_branch": "main",
+    "waves": [
+      {
+        "id": 1,
+        "tasks": [
+          "1",
+          "2",
+          "3"
+        ],
+        "notes": "Three disjoint modules (academy_scraper, blog_scraper, synopsis_generator) with disjoint test files; no shared identifiers or infra files. Tasks 2 and 3 are motivated by the same underlying gap but touch different files and don't call into each other."
+      },
+      {
+        "id": 2,
+        "tasks": [
+          "4"
+        ],
+        "notes": "README documents the final behavior of all three prior tasks, so it waits for them; also the only task touching README.md, avoiding a lexical conflict with itself."
+      }
+    ],
+    "predicted_files": {
+      "1": [
+        "src/doc_suggester_ch/academy_scraper.py",
+        "tests/test_academy_scraper.py"
+      ],
+      "2": [
+        "src/doc_suggester_ch/blog_scraper.py",
+        "tests/test_blog_scraper.py"
+      ],
+      "3": [
+        "src/doc_suggester_ch/synopsis_generator.py",
+        "tests/test_synopsis_generator.py"
+      ],
+      "4": [
+        "README.md"
+      ]
+    },
+    "post_merge_build": []
+  },
+  "security_audit": "auto",
+  "quality_review": "auto",
+  "plan_review": "auto",
+  "plan_review_model": null,
+  "deferred_review": "auto",
+  "sweep": false,
+  "security_findings": [],
+  "quality_findings": [],
+  "plan_review_findings": [
+    {
+      "id": "pr1",
+      "reviewer_ref": "f1",
+      "status": "applied",
+      "disposition_reason": "Added ac14 (critical) to task 1 requiring content_hash from enrichment_text and refresh_training forwarding source_text=enrichment_text.",
+      "dispositioned_at": "2026-09-28T11:52:05-04:00",
+      "supersedes": null,
+      "discovered_at": "2026-09-28T11:51:57-04:00",
+      "round": 1,
+      "severity": "high",
+      "confidence": 0.98,
+      "category": "missing-task",
+      "target": "tasks[0].acceptance_criteria",
+      "title": "Academy refresh wiring and transcript-based hashing are not explicitly required",
+      "description": "The criteria change scrape_catalog's return type and make source_text optional, but never explicitly require refresh_training to unpack the tuple and forward enrichment_text, or specify content_hash's input.",
+      "evidence": "academy_scraper.py:354/:361/:182; spec .claude/plans/build-the-plan-abstract-boole.md:119,135-138",
+      "recommendation": "Make the transcript-to-cache-to-prompt connection an explicit acceptance criterion.",
+      "suggested_change": {
+        "op": "add",
+        "target": "tasks[0].acceptance_criteria",
+        "proposed": "ac14 added"
+      }
+    },
+    {
+      "id": "pr2",
+      "reviewer_ref": "f2",
+      "status": "applied",
+      "disposition_reason": "Modified task 2 ac2 (now critical) to require symmetric checkpoint pruning and added a revival regression to ac5's test list.",
+      "dispositioned_at": "2026-09-28T11:52:05-04:00",
+      "supersedes": null,
+      "discovered_at": "2026-09-28T11:51:57-04:00",
+      "round": 1,
+      "severity": "medium",
+      "confidence": 0.99,
+      "category": "missing-task",
+      "target": "tasks[1].acceptance_criteria[1]",
+      "title": "Archive pruning leaves checkpoints that suppress republished posts",
+      "description": "Pruning the archive without pruning the checkpoint permanently suppresses a post that returns to the sitemap with an unchanged lastmod.",
+      "evidence": "blog_scraper.py:222,259-266; spec .claude/plans/build-the-plan-abstract-boole.md:178-183,188-190",
+      "recommendation": "Prune checkpoint entries alongside removed archive bodies.",
+      "suggested_change": {
+        "op": "modify",
+        "target": "tasks[1].acceptance_criteria[1]",
+        "proposed": "ac2 modified to add symmetric checkpoint pruning + revival test"
+      }
+    },
+    {
+      "id": "pr3",
+      "reviewer_ref": "f3",
+      "status": "applied",
+      "disposition_reason": "Added ac15 to task 1 requiring per-lesson failure isolation in _fetch_lesson_transcripts.",
+      "dispositioned_at": "2026-09-28T11:52:05-04:00",
+      "supersedes": null,
+      "discovered_at": "2026-09-28T11:51:57-04:00",
+      "round": 1,
+      "severity": "medium",
+      "confidence": 0.97,
+      "category": "missing-constraint",
+      "target": "tasks[0].acceptance_criteria[8]",
+      "title": "Required lesson failure isolation is absent from the orchestration criteria",
+      "description": "The spec requires per-lesson failure isolation but the orchestration AC omits it, allowing one bad lesson to abort the whole catalog refresh.",
+      "evidence": "spec .claude/plans/build-the-plan-abstract-boole.md:107-109; academy_scraper.py:212-221 precedent for return_exceptions=True",
+      "recommendation": "Promote the spec's failure-isolation behavior into a graded criterion.",
+      "suggested_change": {
+        "op": "add",
+        "target": "tasks[0].acceptance_criteria",
+        "proposed": "ac15 added"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1",
+      "title": "Rewrite academy_scraper.py for Skilljar catalog + transcript-enriched courses",
+      "status": "in_progress",
+      "depends_on": [],
+      "files": [
+        "src/doc_suggester_ch/academy_scraper.py",
+        "tests/test_academy_scraper.py"
+      ],
+      "origin": "planned",
+      "self_review": null,
+      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-1",
+      "branch": "harness/feat-academy-rewrite-blog-fix/task-1",
+      "why": "The old Thought-Industries scraper is fully dead (0 courses); Skilljar exposes richer structured data (skilljarCourse JS object, ordered lesson lists, public transcripts) that should replace it wholesale per the hand-authored spec.",
+      "acceptance_criteria": [
+        {
+          "id": "ac1",
+          "text": "Course dataclass matches the spec exactly: id, title, url, learning_paths, language, module_count, modules, description, difficulty, summary, technologies, personas, problems_addressed, intent_signals, content_hash; member_url and style are removed entirely (asdict(course) omits them with no extra code).",
+          "critical": true
+        },
+        {
+          "id": "ac2",
+          "text": "discover_course_slugs filters sitemap entries to course-root URLs matching ^https://learn\\.clickhouse\\.com/([a-z0-9-]+)$, excluding /page/... and /path/... two-segment URLs."
+        },
+        {
+          "id": "ac3",
+          "text": "parse_skilljar_course_block extracts id/title/short_description/long_description_html/tags from the embedded skilljarCourse script via regex only (no JS eval), correctly unescaping \\' and \\uXXXX sequences via manual regex substitution (not Python's unicode_escape codec).",
+          "critical": true
+        },
+        {
+          "id": "ac4",
+          "text": "parse_course_page returns None for pages whose title matches _SEPARATOR_TITLE_RE (the '[separator] ...' decoy); otherwise it builds a Course with learning_paths == tags, modules == ordered lesson titles (quiz entries included), module_count excluding quiz entries (_QUIZ_TITLE_RE), description = short_description + markdown(long_description_html), and content_hash == \"\" at this stage.",
+          "critical": true
+        },
+        {
+          "id": "ac5",
+          "text": "parse_lesson_list returns ordered, de-duplicated (lesson_path, lesson_title) tuples scoped to the given course slug."
+        },
+        {
+          "id": "ac6",
+          "text": "parse_lesson_transcript returns \"\" for pages without <article class=\"ch-lesson\"> (quiz pages) and otherwise returns markdown text with <span class=\"ch-ts\"> timestamps and <div class=\"ch-slide\"> images stripped."
+        },
+        {
+          "id": "ac7",
+          "text": "_assemble_enrichment_text appends a '## Lessons' section with per-lesson '### {title}' headers for non-empty transcripts in lesson order, and returns the bare description unchanged when no transcript is non-empty."
+        },
+        {
+          "id": "ac8",
+          "text": "The persisted Course.description never contains a '## Lessons' section - transcripts feed only the enrichment text used for the LLM call, never Course.description or the JSON payload written to training-catalog.json.",
+          "critical": true
+        },
+        {
+          "id": "ac9",
+          "text": "scrape_catalog orchestrates: fetch SITEMAP_URL -> fetcher.parse_sitemap -> discover_course_slugs -> gather each /{slug} course-root page -> parse_course_page (dropping None results) -> _fetch_lesson_transcripts across all remaining courses via one shared asyncio.Semaphore(_LESSON_CONCURRENCY) -> finalize each course's content_hash -> sort by (language, learning_paths[:1], title); returns (courses, enrichment_text)."
+        },
+        {
+          "id": "ac10",
+          "text": "enrich_courses accepts an optional source_text parameter; when provided, enrich_one builds its prompt description slot from source_text[course.id] (truncated to 6000 chars) instead of course.description; existing calls that omit the parameter behave exactly as before, and the content_hash cache-hit check is unchanged."
+        },
+        {
+          "id": "ac11",
+          "text": "_ENRICH_PROMPT no longer references Style; enrich_one no longer passes a style= format kwarg."
+        },
+        {
+          "id": "ac12",
+          "text": "refresh_training's JSON payload sets \"source\" to SITEMAP_URL."
+        },
+        {
+          "id": "ac13",
+          "text": "uv run pytest tests/test_academy_scraper.py -v passes, including all new/replaced tests in the doc's test plan: discover_course_slugs filtering, skilljar block extraction/unescaping, course-page building (learning_paths/modules/module_count/description/content_hash, separator skip), lesson-transcript stripping (incl. empty-for-quiz-pages), the pure content-hash/enrichment-text helper tests, and enrich_courses's source_text test alongside all pre-existing enrich_courses tests updated to drop member_url=/style= kwargs.",
+          "critical": true
+        },
+        {
+          "id": "ac14",
+          "text": "scrape_catalog sets each course.content_hash from the finalized enrichment text (per _content_hash), not from description alone; refresh_training unpacks (courses, enrichment_text) from scrape_catalog and passes source_text=enrichment_text through to enrich_courses, so a transcript-only edit changes content_hash and reaches the provider prompt even when the course-level description is unchanged.",
+          "critical": true
+        },
+        {
+          "id": "ac15",
+          "text": "_fetch_lesson_transcripts isolates an ordinary fetch/parse failure to its own lesson - the failed lesson contributes \"\" at its original position, lesson order is preserved for the rest, and the failure never aborts the course or the wider catalog refresh (mirrors blog_scraper.refresh_blogs's per-item exception handling, per the spec)."
+        }
+      ],
+      "notes": "A single-file rewrite; keep BASE_URL, CATALOG_NAME, _ENRICH_CONCURRENCY, _strip_tags/_TAG_RE, catalog_path, _load_cached_courses as-is per the spec. Three non-blocking spot-checks called out in the spec (escaped apostrophe on a real course, lesson-anchor markup on a workshop/tutorial-styled course, logging final course/lesson counts on first live run) should be done during implementation but don't gate PASS on their own.",
+      "verdicts": []
+    },
+    {
+      "id": "2",
+      "title": "Fix blog_scraper.py checkpoint staleness (lastmod-aware re-scrape, merge-rebuild archive)",
+      "status": "in_progress",
+      "depends_on": [],
+      "files": [
+        "src/doc_suggester_ch/blog_scraper.py",
+        "tests/test_blog_scraper.py"
+      ],
+      "origin": "planned",
+      "self_review": null,
+      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-2",
+      "branch": "harness/feat-academy-rewrite-blog-fix/task-2",
+      "why": "The checkpoint is presence-based ('have I ever scraped this slug'), so an edited existing post's new content is never re-fetched; nothing downstream reads refresh_blogs's return value, so its semantics are free to change.",
+      "acceptance_criteria": [
+        {
+          "id": "ac1",
+          "text": "Checkpoint entries gain a lastmod field ({slug: {title, url, date, scraped_at, lastmod}}); _needs_scrape/select_todo re-select a slug when the checkpoint's stored lastmod differs from the sitemap's current lastmod for that URL, not just when the slug is entirely new.",
+          "critical": true
+        },
+        {
+          "id": "ac2",
+          "text": "merge_posts prefers scraped over existing on slug collision (fresher content replaces stale) and drops slugs no longer present in discovered (prune-on-removal for unpublished/removed posts). The checkpoint is pruned symmetrically: after a successful archive rebuild, checkpoint entries for slugs no longer in discovered are removed too, so a post that later returns to the sitemap (even with its original lastmod) is eligible for re-scraping instead of being permanently skipped.",
+          "critical": true
+        },
+        {
+          "id": "ac3",
+          "text": "The archive write is always a merge-rebuild: parse the existing archive (if present and not force) via blog_manager.parse_blog_index using a function-local import inside refresh_blogs, convert each parsed BlogPost to a ScrapedPost via _blogpost_to_scraped, call merge_posts(discovered, scraped, existing), and write the full file in discovered order every time - never an append, so a re-scraped post never creates a duplicate '## Title' section.",
+          "critical": true
+        },
+        {
+          "id": "ac4",
+          "text": "refresh_blogs's return value becomes the count of posts (re)scraped this run (new + updated), not the full archive size."
+        },
+        {
+          "id": "ac5",
+          "text": "uv run pytest tests/test_blog_scraper.py -v passes, including test_needs_scrape_flags_new_and_changed_lastmod, test_select_todo_skips_unchanged, test_merge_posts_prefers_scraped_over_existing, test_merge_posts_drops_slugs_no_longer_in_discovered, test_blogpost_to_scraped_round_trips_through_format_post, and a new test covering checkpoint-and-archive symmetry: a post removed from the sitemap is pruned from both, then reappears with its original lastmod and is correctly re-selected and re-scraped rather than permanently skipped.",
+          "critical": true
+        }
+      ],
+      "notes": "Verified via grep before this plan was authored: nothing reads refresh_blogs's return value today (cli.py's _run_init ignores it inside asyncio.gather and re-parses the archive from disk instead; suggester.py awaits and ignores it; every test only asserts awaited/not_awaited) - the return-value change is zero-compatibility-risk.",
+      "verdicts": []
+    },
+    {
+      "id": "3",
+      "title": "Fix synopsis_generator.py cache staleness (content-hash invalidation)",
+      "status": "in_progress",
+      "depends_on": [],
+      "files": [
+        "src/doc_suggester_ch/synopsis_generator.py",
+        "tests/test_synopsis_generator.py"
+      ],
+      "origin": "planned",
+      "self_review": null,
+      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-3",
+      "branch": "harness/feat-academy-rewrite-blog-fix/task-3",
+      "why": "Without content-hash invalidation here, a post that task 2 makes blog_scraper.py correctly re-scrape would still keep serving its stale synopsis forever, silently undoing that fix.",
+      "acceptance_criteria": [
+        {
+          "id": "ac1",
+          "text": "On-disk cache schema becomes {slug: {\"synopsis\": str, \"content_hash\": str}}, hashed as sha256(post.full_content.encode())[:16] - the same formula as Academy's enrichment cache.",
+          "critical": true
+        },
+        {
+          "id": "ac2",
+          "text": "load_synopses normalizes any legacy bare-string entry to {\"synopsis\": value, \"content_hash\": \"\"} on read, so an old entry regenerates exactly once and then upgrades to the new shape."
+        },
+        {
+          "id": "ac3",
+          "text": "The 'missing' filter regenerates a synopsis when the slug is absent from the cache OR when the cached content_hash doesn't match the post's current content hash.",
+          "critical": true
+        },
+        {
+          "id": "ac4",
+          "text": "generate_synopses's return value to callers stays dict[str, str] (slug -> synopsis text only); the richer on-disk shape never leaks into it, and suggester.py's _build_blog_index_text needs zero changes."
+        },
+        {
+          "id": "ac5",
+          "text": "uv run pytest tests/test_synopsis_generator.py -v passes, including test_load_synopses_upgrades_legacy_flat_string_entries, test_generate_synopses_skips_unchanged_content_hash, test_generate_synopses_regenerates_on_changed_content, and test_generate_synopses_returns_flat_string_mapping.",
+          "critical": true
+        }
+      ],
+      "notes": "This is ordinary defensive parsing of a pre-existing data file (the legacy-entry upgrade), not a compatibility shim in the logic.",
+      "verdicts": []
+    },
+    {
+      "id": "4",
+      "title": "Update README for Skilljar Academy source + blog staleness fix",
+      "status": "pending",
+      "depends_on": [
+        "1",
+        "2",
+        "3"
+      ],
+      "files": [
+        "README.md"
+      ],
+      "origin": "planned",
+      "self_review": null,
+      "worktree": "",
+      "branch": "",
+      "why": "README currently describes the dead TI scraper (29 courses, signed-in/member URLs) and says nothing about the blog archive's edit/removal-aware refresh - it should describe what the code now actually does.",
+      "acceptance_criteria": [
+        {
+          "id": "ac1",
+          "text": "The 'How it works' / 'Content sources' / module-layout description of Academy no longer mentions 29 courses or signed-in/member URLs; it describes the Skilljar sitemap + lesson-transcript-for-enrichment mechanics and the ~19-course count.",
+          "critical": true
+        },
+        {
+          "id": "ac2",
+          "text": "README documents that the blog archive refresh is edit-aware (re-scrapes when a post's sitemap lastmod advances) and removal-aware (prunes posts no longer present in the sitemap)."
+        },
+        {
+          "id": "ac3",
+          "text": "No source or test files change as part of this task - docs only."
+        }
+      ],
+      "notes": "Docs-only task; runs after tasks 1-3 so it documents their final, merged behavior rather than an in-flight design.",
+      "verdicts": []
+    }
+  ],
+  "deferrals": [],
+  "gap_notes": [],
+  "log": [
+    {
+      "timestamp": "2026-09-28T11:50:00-04:00",
+      "note": "Plan authored via /harness plan from the hand-written spec at .claude/plans/build-the-plan-abstract-boole.md. Spec was already fully specific (exact function signatures, dataclass shape, test plan) so the clarify phase was skipped."
+    },
+    {
+      "timestamp": "2026-09-28T11:59:54-04:00",
+      "note": "Dispatched task 1 to harness-task-runner in worktree /Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-1"
+    },
+    {
+      "timestamp": "2026-09-28T11:59:54-04:00",
+      "note": "Dispatched task 2 to harness-task-runner in worktree /Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-2"
+    },
+    {
+      "timestamp": "2026-09-28T11:59:55-04:00",
+      "note": "Dispatched task 3 to harness-task-runner in worktree /Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-3"
+    }
+  ],
+  "plan_review_state": {
+    "rounds": [
+      {
+        "round": 1,
+        "started_at": "2026-09-28T11:47:55-04:00",
+        "duration_s": 128,
+        "model_resolved": null,
+        "verdict": "revise",
+        "findings": 3,
+        "applied": 3,
+        "deferred": 0,
+        "rejected": 0,
+        "exit": "ok",
+        "recorded_at": "2026-09-28T11:52:13-04:00"
+      },
+      {
+        "round": 2,
+        "started_at": "2026-09-28T11:52:34-04:00",
+        "duration_s": 88,
+        "model_resolved": null,
+        "verdict": "approve",
+        "findings": 0,
+        "applied": 0,
+        "deferred": 0,
+        "rejected": 0,
+        "exit": "ok",
+        "recorded_at": "2026-09-28T11:54:10-04:00"
+      }
+    ],
+    "threshold": "medium",
+    "max_rounds": 3,
+    "enabled_by": "auto",
+    "stop_reason": "approve",
+    "summary": "2 rounds; verdict approve; 3 applied / 0 deferred / 0 rejected",
+    "last_run_at": "2026-09-28T11:54:10-04:00"
+  },
+  "managed_run": {
+    "started_at": "2026-09-28T11:58:34-04:00",
+    "go_confirmed_at": "2026-09-28T11:59:29-04:00",
+    "paused_at": null,
+    "pause_reason": "",
+    "resumes": [],
+    "completed_at": null,
+    "auto_decisions": []
+  }
+}
