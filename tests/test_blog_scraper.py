@@ -9,11 +9,15 @@ import pytest
 
 from doc_suggester_ch.blog_scraper import (
     ScrapedPost,
+    _blogpost_to_scraped,
     _iso_date,
+    _needs_scrape,
     format_post,
     load_checkpoint,
+    merge_posts,
     parse_post_html,
     save_checkpoint,
+    select_todo,
     url_to_slug,
 )
 from doc_suggester_ch.fetcher import parse_sitemap
@@ -186,3 +190,115 @@ def test_archive_round_trip_survives_horizontal_rules(tmp_path: Path):
     # Nothing lost: the last paragraph still made it through
     assert parsed[0].full_content == post.markdown
     assert "Final paragraph." in parsed[0].full_content
+
+
+def test_needs_scrape_flags_new_and_changed_lastmod():
+    checkpoint = {"alpha-post": {"lastmod": "2026-01-05T10:00:00.000Z"}}
+
+    # Brand-new slug: no checkpoint entry at all.
+    assert _needs_scrape("beta-post", "2026-03-11T08:30:00.000Z", checkpoint) is True
+    # Existing slug whose sitemap lastmod has advanced (edited on the site).
+    assert _needs_scrape("alpha-post", "2026-02-01T00:00:00.000Z", checkpoint) is True
+    # Existing slug with an unchanged lastmod: no re-scrape needed.
+    assert _needs_scrape("alpha-post", "2026-01-05T10:00:00.000Z", checkpoint) is False
+
+
+def test_select_todo_skips_unchanged():
+    checkpoint = {"alpha-post": {"lastmod": "2026-01-05T10:00:00.000Z"}}
+    discovered = [
+        ("https://clickhouse.com/blog/alpha-post", "2026-01-05T10:00:00.000Z"),
+        ("https://clickhouse.com/blog/beta-post", "2026-03-11T08:30:00.000Z"),
+    ]
+
+    assert select_todo(discovered, checkpoint) == [
+        ("https://clickhouse.com/blog/beta-post", "2026-03-11T08:30:00.000Z"),
+    ]
+
+
+def test_merge_posts_prefers_scraped_over_existing():
+    discovered = [("https://clickhouse.com/blog/alpha-post", "2026-02-01T00:00:00.000Z")]
+    existing = {
+        "alpha-post": ScrapedPost(
+            slug="alpha-post", title="Old title", url="https://clickhouse.com/blog/alpha-post",
+            date="2026-01-01", authors=[], markdown="stale body",
+        ),
+    }
+    scraped = {
+        "alpha-post": ScrapedPost(
+            slug="alpha-post", title="New title", url="https://clickhouse.com/blog/alpha-post",
+            date="2026-02-01", authors=[], markdown="fresh body",
+        ),
+    }
+
+    merged = merge_posts(discovered, scraped, existing)
+
+    assert len(merged) == 1
+    assert merged[0].markdown == "fresh body"
+    assert merged[0].title == "New title"
+
+
+def test_merge_posts_drops_slugs_no_longer_in_discovered():
+    discovered = [("https://clickhouse.com/blog/alpha-post", "2026-02-01T00:00:00.000Z")]
+    existing = {
+        "alpha-post": ScrapedPost(
+            slug="alpha-post", title="A", url="https://clickhouse.com/blog/alpha-post",
+            date="2026-01-01", authors=[], markdown="a",
+        ),
+        "removed-post": ScrapedPost(
+            slug="removed-post", title="Gone", url="https://clickhouse.com/blog/removed-post",
+            date="2025-12-01", authors=[], markdown="gone",
+        ),
+    }
+
+    merged = merge_posts(discovered, {}, existing)
+
+    assert [post.slug for post in merged] == ["alpha-post"]
+
+
+def test_blogpost_to_scraped_round_trips_through_format_post(tmp_path: Path):
+    from doc_suggester_ch.blog_manager import archive_path, parse_blog_index
+
+    post = ScrapedPost(
+        slug="wide-events", title="Wide events, not metrics",
+        url="https://clickhouse.com/blog/wide-events", date="2026-04-02",
+        authors=["Dale Cooper"], markdown="Store the raw event.",
+    )
+    path = archive_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# H\n\n---\n\n" + format_post(post), encoding="utf-8")
+
+    parsed = parse_blog_index(path)
+    assert len(parsed) == 1
+
+    round_tripped = _blogpost_to_scraped(parsed[0])
+    assert round_tripped.slug == post.slug
+    assert round_tripped.title == post.title
+    assert round_tripped.url == post.url
+    assert round_tripped.date == post.date
+    assert round_tripped.authors == post.authors
+    assert round_tripped.markdown == post.markdown
+
+
+def test_checkpoint_and_archive_symmetry_allows_revival_after_removal():
+    """A post pruned from both the checkpoint and archive on removal must be
+    re-selected for scraping if it later reappears — even with its original,
+    unchanged lastmod. Without symmetric checkpoint pruning, the stale
+    checkpoint entry would suppress it forever."""
+    url = "https://clickhouse.com/blog/revived-post"
+    original_lastmod = "2026-01-05T10:00:00.000Z"
+    checkpoint = {"revived-post": {"lastmod": original_lastmod}}
+
+    # Round 2: the post is removed from the sitemap. `refresh_blogs` prunes
+    # any checkpoint entry whose slug is no longer in `discovered`.
+    discovered_after_removal: list[tuple[str, str]] = []
+    discovered_slugs = {url_to_slug(u) for u, _ in discovered_after_removal}
+    checkpoint = {slug: entry for slug, entry in checkpoint.items() if slug in discovered_slugs}
+    assert checkpoint == {}
+
+    # Round 3: the post reappears with its ORIGINAL, unchanged lastmod. A
+    # naive "have I ever seen this lastmod" check would wrongly skip it, but
+    # since the checkpoint entry was pruned, select_todo must still pick it up.
+    discovered_after_revival = [(url, original_lastmod)]
+    todo = select_todo(discovered_after_revival, checkpoint)
+
+    assert todo == [(url, original_lastmod)]
