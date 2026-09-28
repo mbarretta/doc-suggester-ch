@@ -408,7 +408,7 @@
     {
       "id": "4",
       "title": "Update README for Skilljar Academy source + blog staleness fix",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "1",
         "2",
@@ -419,8 +419,8 @@
       ],
       "origin": "planned",
       "self_review": null,
-      "worktree": "",
-      "branch": "",
+      "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-4",
+      "branch": "harness/feat-academy-rewrite-blog-fix/task-4",
       "why": "README currently describes the dead TI scraper (29 courses, signed-in/member URLs) and says nothing about the blog archive's edit/removal-aware refresh - it should describe what the code now actually does.",
       "acceptance_criteria": [
         {
@@ -471,6 +471,10 @@
     {
       "timestamp": "2026-09-28T12:17:53-04:00",
       "note": "Task 2 (blog_scraper checkpoint staleness): 1 retry, PASS on retry, commit b61f9f4. Attempt 1's early-return in refresh_blogs skipped removal-pruning when no lastmod changed (critical ac2/ac3 FAIL); retry fixed by computing removed_slugs alongside todo and short-circuiting only when both empty."
+    },
+    {
+      "timestamp": "2026-09-28T12:18:50-04:00",
+      "note": "Dispatched task 4 to harness-task-runner in worktree .claude/worktrees/feat-academy-rewrite-blog-fix-task-4 (wave 2, managed mode — single-task wave runs via runner, not inline)"
     }
   ],
   "plan_review_state": {
