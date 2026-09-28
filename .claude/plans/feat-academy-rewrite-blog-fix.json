@@ -497,7 +497,7 @@
     {
       "id": "def-d1",
       "title": "Extract shared _content_hash helper (dedupe academy_scraper.py / synopsis_generator.py)",
-      "status": "in_progress",
+      "status": "complete",
       "depends_on": [],
       "files": [
         "src/doc_suggester_ch/academy_scraper.py",
@@ -505,7 +505,12 @@
         "src/doc_suggester_ch/fetcher.py"
       ],
       "origin": "remediation",
-      "self_review": null,
+      "self_review": {
+        "applied": 0,
+        "deferred": 0,
+        "rejected": 0,
+        "recorded_at": "2026-09-28T13:15:28-04:00"
+      },
       "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-def-d1",
       "branch": "harness/feat-academy-rewrite-blog-fix/task-def-d1",
       "why": "Deferred item d1 (quality-finding, from task 4's cycle-level quality review): tasks 1 and 3 independently introduced a byte-for-byte identical _content_hash helper (sha256(text)[:16]); consolidating avoids silent divergence if either copy's formula ever changes without the other being updated.",
@@ -522,7 +527,28 @@
         }
       ],
       "notes": "Deferred item d1 (quality finding q1, severity medium, confidence high) converted per explicit /harness deferred review. Cheap, well-scoped: two call sites, no behavior change, existing tests for both (test_academy_scraper.py, test_synopsis_generator.py) already cover the hash formula and should pass unchanged.",
-      "verdicts": []
+      "verdicts": [
+        {
+          "overall": "PASS",
+          "verification": "PASS",
+          "criteria": "PASS",
+          "criteria_critical": "PASS",
+          "constraints": "PASS",
+          "quality": "PASS",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [],
+          "notes": "Clean, minimal extraction matching the deferred quality finding exactly - one shared _content_hash in new hashing.py, both call sites import and use it, no duplicate definitions remain (verified by grep). Full suite passes at 210 tests, matching pre-refactor count, and no test file was touched. All four plan-level constraints are scoped to files this diff never opens. No placeholders introduced.",
+          "timestamp": "2026-09-28T13:15:28-04:00"
+        }
+      ],
+      "drift": {
+        "predicted": 3,
+        "touched": 3,
+        "unpredicted": 0,
+        "ratio": 0,
+        "recorded_at": "2026-09-28T13:15:28-04:00"
+      }
     }
   ],
   "deferrals": [
@@ -612,6 +638,10 @@
     {
       "timestamp": "2026-09-28T13:09:57-04:00",
       "note": "Dispatched task def-d1 to harness-task-runner in worktree .claude/worktrees/feat-academy-rewrite-blog-fix-task-def-d1 (wave 3, managed mode)"
+    },
+    {
+      "timestamp": "2026-09-28T13:15:28-04:00",
+      "note": "Task def-d1 (shared _content_hash extraction, clears deferred quality finding q1): single-pass PASS, commit 59bdcf7. New src/doc_suggester_ch/hashing.py holds the one _content_hash def; academy_scraper.py and synopsis_generator.py both import it."
     }
   ],
   "plan_review_state": {
