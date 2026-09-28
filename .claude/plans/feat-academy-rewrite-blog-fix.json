@@ -64,7 +64,23 @@
   "deferred_review": "auto",
   "sweep": false,
   "security_findings": [],
-  "quality_findings": [],
+  "quality_findings": [
+    {
+      "status": "deferred",
+      "justification": "",
+      "remediation_task_id": "",
+      "remediated_at": null,
+      "discovered_at": "2026-09-28T12:31:01-04:00",
+      "id": "q1",
+      "severity": "medium",
+      "category": "duplication",
+      "location": "src/doc_suggester_ch/academy_scraper.py:245-246 and src/doc_suggester_ch/synopsis_generator.py:45-47",
+      "evidence": "academy_scraper.py: def _content_hash(text: str) -> str: return hashlib.sha256(text.encode(\"utf-8\")).hexdigest()[:16]  |  synopsis_generator.py: def _content_hash(text: str) -> str: (docstring: same formula as Academy's enrichment cache) return hashlib.sha256(text.encode(\"utf-8\")).hexdigest()[:16]",
+      "description": "Tasks 1 and 3, working in separate worktrees, each introduced an identical private _content_hash helper (sha256, hex, truncated to 16 chars). Task 3's docstring acknowledges it mirrors Academy's formula, but the duplication was not consolidated - a byte-for-byte copy that will silently diverge if either task's hash formula changes without the other being updated.",
+      "remediation": "Extract _content_hash into a small shared module (e.g. src/doc_suggester_ch/hashing.py, or add to fetcher.py) and have both academy_scraper.py and synopsis_generator.py import and call the shared version, deleting the duplicate bodies. No behavior change; existing tests continue to pass unchanged.",
+      "confidence": "high"
+    }
+  ],
   "plan_review_findings": [
     {
       "id": "pr1",
@@ -467,7 +483,24 @@
       }
     }
   ],
-  "deferrals": [],
+  "deferrals": [
+    {
+      "id": "d1",
+      "task_id": "",
+      "source": "quality-finding",
+      "finding_id": "q1",
+      "severity": "medium",
+      "reason_code": "",
+      "location": "src/doc_suggester_ch/academy_scraper.py:245-246 and src/doc_suggester_ch/synopsis_generator.py:45-47",
+      "note": "Duplicate _content_hash helper (sha256[:16]) introduced independently by tasks 1 and 3; extract into a shared module.",
+      "status": "carried",
+      "deferred_at": "2026-09-28T12:31:13-04:00",
+      "resolved_at": null,
+      "resolution_task_id": "",
+      "resolved_by_plan": "",
+      "reason": ""
+    }
+  ],
   "gap_notes": [],
   "log": [
     {
@@ -513,6 +546,10 @@
     {
       "timestamp": "2026-09-28T12:27:09-04:00",
       "note": "Security audit clean (range 5a1aaa5..HEAD, 11 files audited, 0 findings). Auditor noted but did not flag the enrichment path's larger LLM prompt-injection surface: first-party content, non-sensitive output fields, explicitly designed per plan constraints."
+    },
+    {
+      "timestamp": "2026-09-28T12:31:21-04:00",
+      "note": "Quality review (range 5a1aaa5..HEAD, 7 files): 1 finding (q1, medium/duplication, high confidence) - carried per managed policy (auto-remediate threshold is severity>=high with confidence=high)."
     }
   ],
   "plan_review_state": {
@@ -572,6 +609,13 @@
         "phase": "7.4",
         "decision": "merged wave 2: task 4 -> main; pushed",
         "reason": "managed run contract: merge-and-push pre-authorized at the go gate"
+      },
+      {
+        "id": "ad3",
+        "timestamp": "2026-09-28T12:31:13-04:00",
+        "phase": "7.6",
+        "decision": "quality finding q1 (medium/high-confidence duplication) carried to deferral ledger, not remediated",
+        "reason": "managed policy: auto-remediate only severity>=high with confidence=high; q1 is severity=medium"
       }
     ]
   }
