@@ -408,7 +408,7 @@
     {
       "id": "4",
       "title": "Update README for Skilljar Academy source + blog staleness fix",
-      "status": "in_progress",
+      "status": "complete",
       "depends_on": [
         "1",
         "2",
@@ -418,7 +418,12 @@
         "README.md"
       ],
       "origin": "planned",
-      "self_review": null,
+      "self_review": {
+        "applied": 1,
+        "deferred": 0,
+        "rejected": 1,
+        "recorded_at": "2026-09-28T12:24:29-04:00"
+      },
       "worktree": "/Users/michael.barretta/workspace/github/mbarretta/ch-doc-suggester/.claude/worktrees/feat-academy-rewrite-blog-fix-task-4",
       "branch": "harness/feat-academy-rewrite-blog-fix/task-4",
       "why": "README currently describes the dead TI scraper (29 courses, signed-in/member URLs) and says nothing about the blog archive's edit/removal-aware refresh - it should describe what the code now actually does.",
@@ -438,7 +443,28 @@
         }
       ],
       "notes": "Docs-only task; runs after tasks 1-3 so it documents their final, merged behavior rather than an in-flight design.",
-      "verdicts": []
+      "verdicts": [
+        {
+          "overall": "PASS",
+          "verification": "PASS",
+          "criteria": "PASS",
+          "criteria_critical": "PASS",
+          "constraints": "PASS",
+          "quality": "PASS",
+          "no_placeholders": "PASS",
+          "no_test_weakening": "PASS",
+          "issues": [],
+          "notes": "Docs-only task, diff scoped to README.md exactly as required (ac3). ac1 and ac2 verified by reading the diff directly against merged wave-1 source. Full suite (210 tests) passes; no test files touched so no_test_weakening is a clean PASS by enumeration. All four plan-level constraints are source-code-scoped and unaffected by a README-only change.",
+          "timestamp": "2026-09-28T12:24:29-04:00"
+        }
+      ],
+      "drift": {
+        "predicted": 1,
+        "touched": 1,
+        "unpredicted": 0,
+        "ratio": 0,
+        "recorded_at": "2026-09-28T12:24:30-04:00"
+      }
     }
   ],
   "deferrals": [],
@@ -475,6 +501,10 @@
     {
       "timestamp": "2026-09-28T12:18:50-04:00",
       "note": "Dispatched task 4 to harness-task-runner in worktree .claude/worktrees/feat-academy-rewrite-blog-fix-task-4 (wave 2, managed mode — single-task wave runs via runner, not inline)"
+    },
+    {
+      "timestamp": "2026-09-28T12:24:29-04:00",
+      "note": "Task 4 (README update): single-pass PASS, commit c9e16b3. Documents Skilljar Academy source and edit/removal-aware blog refresh, replacing stale TI/29-course/three-level-crawl language."
     }
   ],
   "plan_review_state": {
