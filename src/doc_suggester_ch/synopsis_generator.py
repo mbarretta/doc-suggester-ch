@@ -10,7 +10,6 @@ post's content changes (tracked via a content hash in the cache).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import sys
@@ -18,6 +17,7 @@ from pathlib import Path
 
 from doc_suggester_ch.blog_manager import BlogPost
 from doc_suggester_ch.blog_scraper import url_to_slug
+from doc_suggester_ch.hashing import _content_hash
 from doc_suggester_ch.llm import LLMProvider, resolve_provider
 
 logger = logging.getLogger(__name__)
@@ -40,11 +40,6 @@ Content:
 
 def synopses_path(project_root: Path) -> Path:
     return project_root / "output" / _SYNOPSES_NAME
-
-
-def _content_hash(text: str) -> str:
-    """Same formula as Academy's enrichment cache: sha256(text)[:16]."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def load_synopses(project_root: Path) -> dict[str, dict[str, str]]:
