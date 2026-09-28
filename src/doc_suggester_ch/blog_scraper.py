@@ -6,9 +6,15 @@ listing — the sitemap enumerates every post in one request and carries a
 
 Writes two files under `<project_root>/output/`:
   - clickhouse-blog-archive.md — one `## Title` section per post
-  - checkpoint.json            — {slug: {title, url, date, scraped_at}}
+  - checkpoint.json            — {slug: {title, url, date, scraped_at, lastmod}}
 
-The checkpoint lets subsequent runs scrape only posts they haven't seen.
+The checkpoint records each slug's sitemap `lastmod` at scrape time, so
+subsequent runs re-scrape a slug whenever the site's `lastmod` advances (an
+edit), not just when the slug is brand new. The archive is always rebuilt
+from a merge of freshly scraped posts and the previously parsed archive,
+ordered by the current sitemap — so a post that disappears from the sitemap
+is pruned, and the checkpoint is pruned to match, letting a later reappearance
+(even with its original `lastmod`) be re-scraped rather than skipped forever.
 """
 
 from __future__ import annotations
@@ -205,19 +211,72 @@ def save_checkpoint(project_root: Path, checkpoint: dict[str, dict]) -> None:
     )
 
 
+def _needs_scrape(slug: str, lastmod: str, checkpoint: dict[str, dict]) -> bool:
+    """True when `slug` is new to the checkpoint or its lastmod has advanced."""
+    entry = checkpoint.get(slug)
+    return entry is None or entry.get("lastmod", "") != lastmod
+
+
+def select_todo(
+    discovered: list[tuple[str, str]], checkpoint: dict[str, dict]
+) -> list[tuple[str, str]]:
+    """Return the (url, lastmod) pairs from `discovered` that need (re)scraping."""
+    return [
+        (url, lastmod)
+        for url, lastmod in discovered
+        if _needs_scrape(url_to_slug(url), lastmod, checkpoint)
+    ]
+
+
+def _blogpost_to_scraped(post: "BlogPost") -> ScrapedPost:
+    """Convert an archive-parsed BlogPost back into a ScrapedPost for merging."""
+    return ScrapedPost(
+        slug=url_to_slug(post.url),
+        title=post.title,
+        url=post.url,
+        date=post.date,
+        authors=post.authors,
+        markdown=post.full_content,
+    )
+
+
+def merge_posts(
+    discovered: list[tuple[str, str]],
+    scraped: dict[str, ScrapedPost],
+    existing: dict[str, ScrapedPost],
+) -> list[ScrapedPost]:
+    """Merge freshly scraped posts over the existing archive, ordered by `discovered`.
+
+    `scraped` wins on slug collision (fresher content replaces stale), and any
+    slug no longer present in `discovered` is dropped (prune-on-removal).
+    """
+    merged = {**existing, **scraped}
+    return [merged[url_to_slug(url)] for url, _ in discovered if url_to_slug(url) in merged]
+
+
 async def refresh_blogs(
     project_root: Path,
     force: bool = False,
     concurrency: int = DEFAULT_CONCURRENCY,
 ) -> int:
-    """Scrape new blog posts into the archive. Returns the number added.
+    """Scrape new/changed blog posts and merge-rebuild the archive.
 
-    With `force`, re-scrapes everything and rebuilds the archive from scratch.
-    Otherwise scrapes only slugs missing from the checkpoint and appends them.
+    Returns the count of posts (re)scraped this run (new + updated), not the
+    full archive size. With `force`, re-scrapes everything. Otherwise scrapes
+    only slugs that are new or whose sitemap `lastmod` has advanced since the
+    last scrape. The archive is always rewritten as a full merge-rebuild —
+    freshly scraped posts merged over the previously parsed archive, ordered
+    by the current sitemap — so removed posts (and their checkpoint entries)
+    are pruned and a re-scraped post never creates a duplicate section.
     """
+    # Function-local import: blog_manager imports from blog_scraper at module
+    # scope, so importing the other way at module scope would cycle.
+    from doc_suggester_ch.blog_manager import archive_path as _archive_path
+    from doc_suggester_ch.blog_manager import parse_blog_index
+
     output_dir = project_root / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = output_dir / ARCHIVE_NAME
+    archive_file = output_dir / ARCHIVE_NAME
 
     checkpoint = {} if force else load_checkpoint(project_root)
 
@@ -227,12 +286,22 @@ async def refresh_blogs(
             _status("Warning: no blog posts found in sitemap — leaving archive as-is.")
             return 0
 
-        todo = [(url, lastmod) for url, lastmod in discovered if url_to_slug(url) not in checkpoint]
-        if not todo:
+        todo = select_todo(discovered, checkpoint)
+        discovered_slugs = {url_to_slug(url) for url, _ in discovered}
+        removed_slugs = set(checkpoint) - discovered_slugs
+        if not todo and not removed_slugs:
+            # Truly nothing to do: no post needs (re)scraping, and no
+            # checkpointed slug has disappeared from the sitemap. If a post
+            # HAD been removed, we must still fall through to the
+            # merge-rebuild below even with an empty `todo`, or the removed
+            # post's stale archive/checkpoint entries would linger forever.
             _status(f"Blog archive up to date ({len(discovered)} posts).")
             return 0
 
-        _status(f"Scraping {len(todo)} blog posts ({len(discovered) - len(todo)} already cached)...")
+        if todo:
+            _status(f"Scraping {len(todo)} blog posts ({len(discovered) - len(todo)} already cached)...")
+        else:
+            _status(f"No posts to (re)scrape, but pruning {len(removed_slugs)} removed post(s)...")
 
         semaphore = asyncio.Semaphore(concurrency)
         done = 0
@@ -254,6 +323,7 @@ async def refresh_blogs(
         results = await asyncio.gather(*(scrape_one(u, m) for u, m in todo))
 
     scraped = {post.slug: post for post in results if post is not None and post.markdown}
+    lastmods_by_slug = {url_to_slug(url): lastmod for url, lastmod in todo}
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for slug, post in scraped.items():
@@ -262,24 +332,24 @@ async def refresh_blogs(
             "url": post.url,
             "date": post.date,
             "scraped_at": now,
+            "lastmod": lastmods_by_slug.get(slug, ""),
         }
+
+    existing: dict[str, ScrapedPost] = {}
+    if not force and archive_file.exists():
+        existing_posts = (_blogpost_to_scraped(bp) for bp in parse_blog_index(_archive_path(project_root)))
+        existing = {post.slug: post for post in existing_posts}
+
+    merged = merge_posts(discovered, scraped, existing)
+    sections = "".join(format_post(post) for post in merged)
+    archive_file.write_text(_ARCHIVE_HEADER + sections, encoding="utf-8")
+    _status(f"Archive rebuilt with {len(merged)} posts: {archive_file}")
+
+    # Prune checkpoint entries for slugs the sitemap no longer carries, so a
+    # post that later reappears (even with its original lastmod) is eligible
+    # for re-scraping instead of being permanently skipped. (`discovered_slugs`
+    # was already computed above, before the early-return check.)
+    checkpoint = {slug: entry for slug, entry in checkpoint.items() if slug in discovered_slugs}
     save_checkpoint(project_root, checkpoint)
 
-    # Rebuild on force (or when there is no archive yet); otherwise append.
-    rebuild = force or not archive_path.exists()
-    ordered = [
-        scraped[url_to_slug(url)]
-        for url, _ in discovered
-        if url_to_slug(url) in scraped
-    ]
-    sections = "".join(format_post(post) for post in ordered)
-
-    if rebuild:
-        archive_path.write_text(_ARCHIVE_HEADER + sections, encoding="utf-8")
-        _status(f"Archive rebuilt with {len(ordered)} posts: {archive_path}")
-    else:
-        with archive_path.open("a", encoding="utf-8") as handle:
-            handle.write(sections)
-        _status(f"Appended {len(ordered)} new posts to {archive_path}")
-
-    return len(ordered)
+    return len(scraped)
