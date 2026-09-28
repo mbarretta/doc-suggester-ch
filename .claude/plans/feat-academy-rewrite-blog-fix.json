@@ -4,7 +4,7 @@
   "kind": "feature",
   "mode": "dev",
   "created": "2026-09-28",
-  "status": "complete",
+  "status": "in_progress",
   "context": "ClickHouse Academy migrated its LMS from Thought Industries to Skilljar; academy_scraper.py's entire URL scheme is dead and produces zero courses today, so it must be rewritten wholesale against the new site's sitemap, embedded skilljarCourse JS objects, and public lesson transcripts (transcripts feed the one-time LLM enrichment call only, never the persisted description). Raised alongside this rewrite, and independent of it, is a pre-existing bug in blog_scraper.py and synopsis_generator.py: both caches are presence-based rather than content-based, so an edited existing post is never re-scraped or re-synopsized. Full design, exact function signatures, dataclass shape, and test plan are hand-authored in .claude/plans/build-the-plan-abstract-boole.md; this plan operationalizes that spec into harness tasks.",
   "verification": "uv run pytest tests/",
   "constraints": [
@@ -36,6 +36,13 @@
           "4"
         ],
         "notes": "README documents the final behavior of all three prior tasks, so it waits for them; also the only task touching README.md, avoiding a lexical conflict with itself."
+      },
+      {
+        "id": 3,
+        "tasks": [
+          "def-d1"
+        ],
+        "notes": "Deferred-review remediation wave, recomputed after Phase 7.65 converted d1 to a task. Single task; touches academy_scraper.py and synopsis_generator.py (both already merged from wave 1) plus fetcher.py, none of which any other pending task touches."
       }
     ],
     "predicted_files": {
@@ -53,6 +60,11 @@
       ],
       "4": [
         "README.md"
+      ],
+      "def-d1": [
+        "src/doc_suggester_ch/academy_scraper.py",
+        "src/doc_suggester_ch/synopsis_generator.py",
+        "src/doc_suggester_ch/fetcher.py"
       ]
     },
     "post_merge_build": []
@@ -481,6 +493,36 @@
         "ratio": 0,
         "recorded_at": "2026-09-28T12:24:30-04:00"
       }
+    },
+    {
+      "id": "def-d1",
+      "title": "Extract shared _content_hash helper (dedupe academy_scraper.py / synopsis_generator.py)",
+      "status": "pending",
+      "depends_on": [],
+      "files": [
+        "src/doc_suggester_ch/academy_scraper.py",
+        "src/doc_suggester_ch/synopsis_generator.py",
+        "src/doc_suggester_ch/fetcher.py"
+      ],
+      "origin": "remediation",
+      "self_review": null,
+      "worktree": "",
+      "branch": "",
+      "why": "Deferred item d1 (quality-finding, from task 4's cycle-level quality review): tasks 1 and 3 independently introduced a byte-for-byte identical _content_hash helper (sha256(text)[:16]); consolidating avoids silent divergence if either copy's formula ever changes without the other being updated.",
+      "acceptance_criteria": [
+        {
+          "id": "ac1",
+          "text": "A single shared _content_hash(text: str) -> str helper (sha256(text.encode('utf-8')).hexdigest()[:16]) lives in one module (e.g. src/doc_suggester_ch/fetcher.py, or a new src/doc_suggester_ch/hashing.py); academy_scraper.py and synopsis_generator.py both import and call it, and neither file defines its own copy of the helper anymore.",
+          "critical": true
+        },
+        {
+          "id": "ac2",
+          "text": "uv run pytest tests/ still passes with no changes to test expectations - the hash formula and its output are byte-for-byte identical to before, so this is a pure refactor with zero behavior change.",
+          "critical": true
+        }
+      ],
+      "notes": "Deferred item d1 (quality finding q1, severity medium, confidence high) converted per explicit /harness deferred review. Cheap, well-scoped: two call sites, no behavior change, existing tests for both (test_academy_scraper.py, test_synopsis_generator.py) already cover the hash formula and should pass unchanged.",
+      "verdicts": []
     }
   ],
   "deferrals": [
@@ -493,10 +535,10 @@
       "reason_code": "",
       "location": "src/doc_suggester_ch/academy_scraper.py:245-246 and src/doc_suggester_ch/synopsis_generator.py:45-47",
       "note": "Duplicate _content_hash helper (sha256[:16]) introduced independently by tasks 1 and 3; extract into a shared module.",
-      "status": "carried",
+      "status": "converted",
       "deferred_at": "2026-09-28T12:31:13-04:00",
-      "resolved_at": null,
-      "resolution_task_id": "",
+      "resolved_at": "2026-09-28T13:08:37-04:00",
+      "resolution_task_id": "def-d1",
       "resolved_by_plan": "",
       "reason": ""
     }
@@ -558,6 +600,14 @@
     {
       "timestamp": "2026-09-28T12:31:38-04:00",
       "note": "Phase 7.7 (charter reconciliation): skipped - no CHARTER.md in this repo."
+    },
+    {
+      "timestamp": "2026-09-28T13:08:37-04:00",
+      "note": "Plan reopened: deferred review converted d1"
+    },
+    {
+      "timestamp": "2026-09-28T13:09:40-04:00",
+      "note": "Deferred review (explicit /harness deferred): 1 converted (d1 -> def-d1), 0 carried, 0 dropped. Added def-d1 remediation task; recomputed parallel_plan (wave 3)."
     }
   ],
   "plan_review_state": {
