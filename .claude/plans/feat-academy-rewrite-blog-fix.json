@@ -505,6 +505,10 @@
     {
       "timestamp": "2026-09-28T12:24:29-04:00",
       "note": "Task 4 (README update): single-pass PASS, commit c9e16b3. Documents Skilljar Academy source and edit/removal-aware blog refresh, replacing stale TI/29-course/three-level-crawl language."
+    },
+    {
+      "timestamp": "2026-09-28T12:25:18-04:00",
+      "note": "Security audit range resolved: 5a1aaa5..HEAD (base_branch SHA at plan.created — parallel_plan.cycle_base_sha was not recorded when this plan was authored)."
     }
   ],
   "plan_review_state": {
