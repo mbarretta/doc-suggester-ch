@@ -550,6 +550,14 @@
     {
       "timestamp": "2026-09-28T12:31:21-04:00",
       "note": "Quality review (range 5a1aaa5..HEAD, 7 files): 1 finding (q1, medium/duplication, high confidence) - carried per managed policy (auto-remediate threshold is severity>=high with confidence=high)."
+    },
+    {
+      "timestamp": "2026-09-28T12:31:37-04:00",
+      "note": "Phase 7.65 (deferred review): skipped - deferrals[] has zero 'open' entries (d1 is 'carried', already dispositioned this cycle)."
+    },
+    {
+      "timestamp": "2026-09-28T12:31:38-04:00",
+      "note": "Phase 7.7 (charter reconciliation): skipped - no CHARTER.md in this repo."
     }
   ],
   "plan_review_state": {
@@ -594,7 +602,7 @@
     "paused_at": null,
     "pause_reason": "",
     "resumes": [],
-    "completed_at": null,
+    "completed_at": "2026-09-28T12:31:38-04:00",
     "auto_decisions": [
       {
         "id": "ad1",
